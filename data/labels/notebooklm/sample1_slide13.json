@@ -1,0 +1,33 @@
+{
+  "schema_version": "0.1",
+  "image": "sample1_slide13.png",
+  "source_pptx": "sample1.pptx",
+  "slide_no": 13,
+  "image_size_px": [
+    1376,
+    768
+  ],
+  "image_mode": "RGBA",
+  "slide_size_emu": [
+    16256000,
+    9144000
+  ],
+  "ratio": "16:9",
+  "labeled_at": null,
+  "labeler": null,
+  "category": null,
+  "watermark": {
+    "present": true,
+    "type": "notebooklm",
+    "approx_bbox_px": [
+      1266,
+      746,
+      110,
+      22
+    ],
+    "note": "NotebookLM 워터마크 우측 하단 (Star-Slide는 background_decoration으로 처리)"
+  },
+  "objects": [],
+  "ground_truth_text": "",
+  "notes": ""
+}
