@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Virtual env
+.venv/
+venv/
+env/
+ENV/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+.env
+.env.local
+.env.*.local
+
+# Runtime data (large)
+storage/
+models/
+data/font_embeddings/
+data/samples/
+data/golden/input/
+data/golden/expected/
+
+# Experiment outputs
+experiments/*/results/
+experiments/*/.cache/
+
+# Session continuity (per-session, not committed)
+.session/CONTINUITY.md
+
+# Build artifacts
+*.whl
+*.tar.gz
+
+# Web (Phase 3)
+web/node_modules/
+web/.next/
+web/out/
+
+# Logs
+*.log
+logs/
