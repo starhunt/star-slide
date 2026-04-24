@@ -15,7 +15,7 @@
   "ratio": "16:9",
   "labeled_at": null,
   "labeler": null,
-  "category": null,
+  "category": "infographic",
   "watermark": {
     "present": true,
     "type": "notebooklm",
@@ -29,5 +29,7 @@
   },
   "objects": [],
   "ground_truth_text": "",
-  "notes": ""
+  "notes": "",
+  "h1_priority": true,
+  "pattern_note": "헥사곤 다중 에이전트 인포그래픽 (6개 AGENT 라벨)"
 }

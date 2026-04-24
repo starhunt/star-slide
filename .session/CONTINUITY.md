@@ -39,9 +39,12 @@
 
 ## 다음 단계 (즉시)
 
-1. **27장 라벨링 시작** (1차 필수: category + ground_truth_text + labeler)
-2. **추가 73장 출처 결정** (옵션 A-D 중 사용자 결정 대기)
-3. P0-T03 H1 검증은 라벨 완료된 슬라이드 일부로 선행 시작 가능
+1. **사용자 라벨링 작업** (10장, `data/labels/notebooklm/H1_PRIORITY_TRACKING.md` 참조)
+   - 1차 필수: ground_truth_text (정답 한글 텍스트 입력)
+   - 2차: objects[] 배열 (bbox + 텍스트 객체 분류)
+2. **사용자 GPU 환경에서 SAM 3.1 가중치 다운로드**
+3. P0-T03 SAM 3.1 추론 코드 완성 (현재 loader.py placeholder, 라벨/모델 준비 후 채움)
+4. P0-T04/T05 (H2 custGeom + H3 OCR) 병렬 진행 가능
 
 ## 관찰 사항 (Phase 0 데이터셋 분석)
 
@@ -52,7 +55,9 @@
   - 비교 다이어그램(Early/Late): sample1_slide02
   - 프로세스 흐름도(swim lane + 4단계): sample1_slide05
   - 카드형 비교(3열 메트릭+도넛): sample2_slide05
-- **표 부재**: 진짜 격자 표 슬라이드 27장 중 0개 → 추가 샘플에서 표 중심 5-10장 의도적 확보 필요
+- **표 1장 발견** (정정): sample2_slide03 = Pro vs Flash 매트릭스(5행x3열) → MVP 표 복원 검증에 직접 사용 가능
+- **H1 priority 10장 선정 완료**: 4가지 패턴(title/comparison/process/diagram/infographic) + 표 1 + 인포그래픽 1
+  - 추적 파일: `data/labels/notebooklm/H1_PRIORITY_TRACKING.md`
 
 ## Phase 0 가설 검증 일정
 

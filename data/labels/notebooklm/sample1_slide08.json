@@ -15,7 +15,7 @@
   "ratio": "16:9",
   "labeled_at": null,
   "labeler": null,
-  "category": null,
+  "category": "diagram",
   "watermark": {
     "present": true,
     "type": "notebooklm",
@@ -29,5 +29,7 @@
   },
   "objects": [],
   "ground_truth_text": "",
-  "notes": ""
+  "notes": "",
+  "h1_priority": true,
+  "pattern_note": "Focusing 흐름도, 좌측 문서 스택 + 우측 Step1/2/3 박스"
 }

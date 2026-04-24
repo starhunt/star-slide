@@ -15,7 +15,7 @@
   "ratio": "16:9",
   "labeled_at": null,
   "labeler": null,
-  "category": null,
+  "category": "comparison",
   "watermark": {
     "present": true,
     "type": "notebooklm",
@@ -29,5 +29,7 @@
   },
   "objects": [],
   "ground_truth_text": "",
-  "notes": ""
+  "notes": "",
+  "h1_priority": true,
+  "pattern_note": "Early Stage vs Late Stage 다이어그램, AI 아이콘 + 화살표"
 }

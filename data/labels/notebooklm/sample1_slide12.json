@@ -15,7 +15,7 @@
   "ratio": "16:9",
   "labeled_at": null,
   "labeler": null,
-  "category": null,
+  "category": "process",
   "watermark": {
     "present": true,
     "type": "notebooklm",
@@ -29,5 +29,7 @@
   },
   "objects": [],
   "ground_truth_text": "",
-  "notes": ""
+  "notes": "",
+  "h1_priority": true,
+  "pattern_note": "Main Session/Forked Session 분기 다이어그램 + 캡션 박스"
 }

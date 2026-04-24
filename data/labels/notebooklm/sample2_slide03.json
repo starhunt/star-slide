@@ -15,7 +15,7 @@
   "ratio": "16:9",
   "labeled_at": null,
   "labeler": null,
-  "category": null,
+  "category": "table",
   "watermark": {
     "present": true,
     "type": "notebooklm",
@@ -29,5 +29,7 @@
   },
   "objects": [],
   "ground_truth_text": "",
-  "notes": ""
+  "notes": "",
+  "h1_priority": true,
+  "pattern_note": "실제 격자 표: Pro vs Flash 매트릭스 (5행 x 3열)"
 }
