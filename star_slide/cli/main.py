@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from star_slide import __version__
+from star_slide.cli import label as label_cmd
 
 app = typer.Typer(
     name="star-slide",
@@ -16,6 +17,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+app.add_typer(label_cmd.app, name="label", help="H1 라벨링 헬퍼.")
 console = Console()
 
 
