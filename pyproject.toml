@@ -121,7 +121,9 @@ module = [
     "pdf2image.*",
     "paddleocr.*",
     "skimage.*",
+    "skimage.metrics.*",
     "svg.path.*",
+    "simple_lama_inpainting.*",
 ]
 ignore_missing_imports = true
 

@@ -27,6 +27,7 @@ from PIL import Image
 from pptx import Presentation
 from pptx.util import Emu, Pt
 
+from star_slide.inpaint.lama import inpaint_background
 from star_slide.input.pptx_extractor import inspect_pptx
 from star_slide.input.validator import validate
 from star_slide.ocr.metrics import cer
@@ -57,8 +58,11 @@ class ConvertOptions:
     """convert 명령 옵션."""
 
     use_libreoffice: bool = True  # False면 임베드 이미지 직접 추출
-    ocr_min_confidence: float = 0.7
-    inpaint: bool = False  # P1-T06 이후 활성화
+    ocr_min_confidence: float = 0.7  # textbox 생성 임계 (보수적)
+    inpaint: bool = True  # P1-T06: LaMa로 텍스트 자리 배경 복원
+    inpaint_padding_px: int = 12
+    inpaint_dilate_px: int = 7
+    inpaint_min_confidence: float = 0.3  # 마스크에 포함할 OCR 임계 (관대)
     vectorize_shapes: bool = False  # P1-T08 이후 활성화
 
 
@@ -150,13 +154,6 @@ def convert(
             ratio=_ratio_str(slide_w_emu, slide_h_emu),
         )
 
-        slide = Slide(
-            id=f"sld_{idx:03d}",
-            page_no=idx,
-            size=slide_size,
-            render_path=png_path,
-        )
-
         # OCR
         try:
             ocr_lines = run_ocr(png_path, lang="korean")
@@ -164,9 +161,42 @@ def convert(
             qa_warnings.append(f"slide {idx} OCR 실패: {exc}")
             ocr_lines = []
 
-        for k, line in enumerate(ocr_lines):
-            if line.confidence < options.ocr_min_confidence:
-                continue
+        accepted_lines = [ln for ln in ocr_lines if ln.confidence >= options.ocr_min_confidence]
+        # 인페인팅용은 더 관대한 임계 (작은 영문 라벨까지 지움)
+        mask_lines = [
+            ln for ln in ocr_lines if ln.confidence >= options.inpaint_min_confidence
+        ]
+
+        # 인페인팅: 모든 OCR 검출 영역(관대한 임계)을 LaMa로 지움
+        background_path = png_path
+        if options.inpaint and mask_lines:
+            try:
+                bboxes_for_mask = [ln.bbox for ln in mask_lines]
+                inpainted = inpaint_background(
+                    png_path,
+                    bboxes_for_mask,
+                    padding=options.inpaint_padding_px,
+                    dilate_kernel=options.inpaint_dilate_px,
+                )
+                if isinstance(inpainted, tuple):
+                    inpainted = inpainted[0]
+                inpaint_dir = workdir / "inpainted"
+                inpaint_dir.mkdir(parents=True, exist_ok=True)
+                background_path = inpaint_dir / png_path.name
+                inpainted.save(background_path)
+            except Exception as exc:
+                qa_warnings.append(f"slide {idx} 인페인팅 실패 (원본 사용): {exc}")
+                background_path = png_path
+
+        slide = Slide(
+            id=f"sld_{idx:03d}",
+            page_no=idx,
+            size=slide_size,
+            render_path=png_path,
+            background_path=background_path,
+        )
+
+        for k, line in enumerate(accepted_lines):
             n_text_total += 1
             n_text_editable += 1
 
@@ -250,9 +280,10 @@ def _compose_pptx(project: Project, output_path: Path) -> None:
     for slide_data in project.slides:
         slide = prs.slides.add_slide(blank_layout)
 
-        # 배경 이미지 (전체 슬라이드 덮음)
+        # 배경 이미지 (인페인팅된 게 있으면 우선, 없으면 원본)
+        bg_path = slide_data.background_path or slide_data.render_path
         slide.shapes.add_picture(
-            str(slide_data.render_path),
+            str(bg_path),
             Emu(0),
             Emu(0),
             width=Emu(slide_data.size.width_emu),

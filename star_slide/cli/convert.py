@@ -48,6 +48,11 @@ def run(
         "--ocr-confidence",
         help="OCR 라인 채택 최소 신뢰도",
     ),
+    inpaint: bool = typer.Option(
+        True,
+        "--inpaint/--no-inpaint",
+        help="LaMa 인페인팅으로 텍스트 자리 배경 자연 복원 (기본 ON)",
+    ),
 ) -> None:
     """input → output 변환."""
     if not input_path.exists():
@@ -60,6 +65,7 @@ def run(
     options = ConvertOptions(
         use_libreoffice=not no_libreoffice,
         ocr_min_confidence=ocr_conf,
+        inpaint=inpaint,
     )
 
     t0 = time.perf_counter()
