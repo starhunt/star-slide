@@ -64,6 +64,11 @@ data/golden/expected/
 # 원본 PPTX (refdata) — 사용자가 명시적으로 git add 하기 전엔 제외
 refdata/
 
+# 변환 결과 (CLI 출력 디렉토리) — 디렉토리는 추적, 내용은 ignore
+output/*
+!output/.gitkeep
+!output/README.md
+
 # Experiment outputs
 experiments/*/results/
 experiments/*/.cache/
