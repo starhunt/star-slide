@@ -13,8 +13,8 @@
     9144000
   ],
   "ratio": "16:9",
-  "labeled_at": null,
-  "labeler": null,
+  "labeled_at": "2026-04-25T09:01:02",
+  "labeler": "claude-vision",
   "category": "comparison",
   "watermark": {
     "present": true,
@@ -28,8 +28,8 @@
     "note": "NotebookLM 워터마크 우측 하단 (Star-Slide는 background_decoration으로 처리)"
   },
   "objects": [],
-  "ground_truth_text": "",
-  "notes": "",
+  "ground_truth_text": "ARCHITECTURAL INTELLIGENCE DOSSIER\n\n시장을 교란하는 파괴적 경제성\n\n경쟁 사구역 모델 대비 압도적으로 낮은 비용 구조 형성.\n높은 토큰 소모량을 요구하는 '에이전틱 워크플로우'의 경제적 진입 장벽을 파괴.\n\n입력 (Cache Hit)\n$0.15\n100만 토큰 당\n\n입력 (Cache Miss)\n$1.75\n100만 토큰 당\n\n출력 (Output)\n$3.50 ~ $4.00\n100만 토큰 당",
+  "notes": "claude-vision 1차 라벨. 큰 텍스트 위주 정확히, 작은 텍스트는 이미지 해상도(1376x768)에서 흐릿한 부분 보이는 만큼 입력. 사용자 검수 권장.",
   "h1_priority": true,
   "pattern_note": "3카드 메트릭 + 도넛 차트 아이콘 (Cache Hit/Miss/Output)"
 }

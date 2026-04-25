@@ -13,8 +13,8 @@
     9144000
   ],
   "ratio": "16:9",
-  "labeled_at": null,
-  "labeler": null,
+  "labeled_at": "2026-04-25T09:01:02",
+  "labeler": "claude-vision",
   "category": "table",
   "watermark": {
     "present": true,
@@ -28,8 +28,8 @@
     "note": "NotebookLM 워터마크 우측 하단 (Star-Slide는 background_decoration으로 처리)"
   },
   "objects": [],
-  "ground_truth_text": "",
-  "notes": "",
+  "ground_truth_text": "V4 라인업 아키텍처 매트릭스\n\nPro (1.6T) | Flash (284B)\n\n파라미터 규모 | 1.6조 (1.6T) | 2,840억 (284B)\n컨텍스트 윈도우 | 100만 토큰 (1M) | 100만 토큰 (1M)\n학습 데이터 | 약 32조~33조 (32-33T) | 약 32조~33조 (32-33T)\n타겟 성능 | 최고 수준의 폐쇄형 SOTA 모델 (Opus 4.6 등) | 극대화된 에이전트 기능 및 속도 중심",
+  "notes": "claude-vision 1차 라벨. 큰 텍스트 위주 정확히, 작은 텍스트는 이미지 해상도(1376x768)에서 흐릿한 부분 보이는 만큼 입력. 사용자 검수 권장.",
   "h1_priority": true,
   "pattern_note": "실제 격자 표: Pro vs Flash 매트릭스 (5행 x 3열)"
 }

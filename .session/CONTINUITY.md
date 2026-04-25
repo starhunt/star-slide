@@ -58,6 +58,10 @@
 - **표 1장 발견** (정정): sample2_slide03 = Pro vs Flash 매트릭스(5행x3열) → MVP 표 복원 검증에 직접 사용 가능
 - **H1 priority 10장 선정 완료**: 4가지 패턴(title/comparison/process/diagram/infographic) + 표 1 + 인포그래픽 1
   - 추적 파일: `data/labels/notebooklm/H1_PRIORITY_TRACKING.md`
+- **H1 priority 10장 ground_truth_text 입력 완료** (2026-04-25, claude-vision)
+  - 평균 217자/슬라이드, 총 2,082자
+  - 큰 텍스트 정확, 작은 텍스트는 1376x768 해상도에서 보이는 만큼
+  - 사용자 검수는 H3 측정 전 권장 (필수는 아님)
 
 ## Phase 0 가설 검증 일정
 

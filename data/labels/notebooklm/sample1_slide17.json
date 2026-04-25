@@ -13,8 +13,8 @@
     9144000
   ],
   "ratio": "16:9",
-  "labeled_at": null,
-  "labeler": null,
+  "labeled_at": "2026-04-25T09:01:02",
+  "labeler": "claude-vision",
   "category": "infographic",
   "watermark": {
     "present": true,
@@ -28,8 +28,8 @@
     "note": "NotebookLM 워터마크 우측 하단 (Star-Slide는 background_decoration으로 처리)"
   },
   "objects": [],
-  "ground_truth_text": "",
-  "notes": "",
+  "ground_truth_text": "진정한 AX(AI 전환)의 완성은 에이전트를 위한 '데이터 스토리지' 구축에 있습니다.\n\nAGENT 1: ANALYSIS\nAGENT 2: COMMUNICATION\nAGENT 3: PLANNING\nAGENT 4: OPTIMIZATION\nAGENT 5: EXECUTION\nAGENT 6: COMMUNICATION\n\n비정형적으로 흩어진 인간의 암묵지를 에이전트가 읽기 쉬운 시스템으로 만드십시오.\n\n잘 구성된 컨텍스트와 하네스만 있다면, AI는 이미 대부분의 업무를 완벽히 수행할 준비가 되어 있습니다.",
+  "notes": "claude-vision 1차 라벨. 큰 텍스트 위주 정확히, 작은 텍스트는 이미지 해상도(1376x768)에서 흐릿한 부분 보이는 만큼 입력. 사용자 검수 권장.",
   "h1_priority": true,
   "pattern_note": "헥사곤 다중 에이전트 인포그래픽 (6개 AGENT 라벨)"
 }

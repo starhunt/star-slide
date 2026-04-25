@@ -13,8 +13,8 @@
     9144000
   ],
   "ratio": "16:9",
-  "labeled_at": null,
-  "labeler": null,
+  "labeled_at": "2026-04-25T09:01:02",
+  "labeler": "claude-vision",
   "category": "comparison",
   "watermark": {
     "present": true,
@@ -28,8 +28,8 @@
     "note": "NotebookLM 워터마크 우측 하단 (Star-Slide는 background_decoration으로 처리)"
   },
   "objects": [],
-  "ground_truth_text": "",
-  "notes": "",
+  "ground_truth_text": "AI의 컨텍스트 한계는 장기 프로젝트의 가장 큰 병목입니다.\n\n[작업 초기 (Early Stage)]\nAI AGENT\n\n[작업 후기 (Late Stage)]\nAI AGENT\n\n기존 방식의 한계: 단일 세션 세션에 모든 작업을 맡기면 컨텍스트가 급격히 방전됩니다.\n\n결과: AI가 길을 잃고, 인간의 개입(디버깅) 시간이 기하급수적으로 늘어납니다.",
+  "notes": "claude-vision 1차 라벨. 큰 텍스트 위주 정확히, 작은 텍스트는 이미지 해상도(1376x768)에서 흐릿한 부분 보이는 만큼 입력. 사용자 검수 권장.",
   "h1_priority": true,
   "pattern_note": "Early Stage vs Late Stage 다이어그램, AI 아이콘 + 화살표"
 }

@@ -13,8 +13,8 @@
     9144000
   ],
   "ratio": "16:9",
-  "labeled_at": null,
-  "labeler": null,
+  "labeled_at": "2026-04-25T09:01:02",
+  "labeler": "claude-vision",
   "category": "process",
   "watermark": {
     "present": true,
@@ -28,8 +28,8 @@
     "note": "NotebookLM 워터마크 우측 하단 (Star-Slide는 background_decoration으로 처리)"
   },
   "objects": [],
-  "ground_truth_text": "",
-  "notes": "",
+  "ground_truth_text": "'세션 포크(Fork)'를 통해 메인 컨텍스트 소모 없이 문서를 추출합니다.\n\nMain Session\nForked Session\n\n문서 작성 (Document Creation)\n안전한 저장소\n\n포크된 세션에서 설계 의도 및 결정을 문서화하고,\n\n문서화 과정에서 발생하는 불필요한 컨텍스트 소모를 막기 위해, 작성 완료 후 포크 세션은 즉시 폐기합니다.",
+  "notes": "claude-vision 1차 라벨. 큰 텍스트 위주 정확히, 작은 텍스트는 이미지 해상도(1376x768)에서 흐릿한 부분 보이는 만큼 입력. 사용자 검수 권장.",
   "h1_priority": true,
   "pattern_note": "Main Session/Forked Session 분기 다이어그램 + 캡션 박스"
 }
