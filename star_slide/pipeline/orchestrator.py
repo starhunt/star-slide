@@ -36,13 +36,17 @@ from star_slide.composer.inject import replace_geometry_with_custgeom
 from star_slide.composer.vectorize import VectorizedShape, vectorize_shape
 from star_slide.inpaint.lama import (
     _bboxes_to_mask,
-    inpaint_background,
     inpaint_with_mask,
 )
 from star_slide.input.pptx_extractor import inspect_pptx
 from star_slide.input.validator import validate
 from star_slide.ocr.metrics import cer
 from star_slide.ocr.paddleocr_worker import OcrLine, run_ocr
+from star_slide.ocr.text_attributes import (
+    detect_korean,
+    estimate_font_color,
+    estimate_font_size_pt,
+)
 from star_slide.rasterize.coords import CoordTransform
 from star_slide.rasterize.libreoffice import (
     LibreOfficeNotFoundError,
@@ -68,6 +72,11 @@ from star_slide.segmentation.classify import (
     classify_masks,
 )
 from star_slide.segmentation.sam2_auto import Sam2Result, run_sam2_auto
+from star_slide.segmentation.sam3 import (
+    Sam3Result,
+    run_sam3_box_prompts,
+    run_sam3_text_prompt,
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +98,12 @@ class ConvertOptions:
     sam_max_masks: int = 200
     vectorize_shape_min_area_ratio: float = 0.001  # vtracer 입력 최소 면적 (0.1%)
     vectorize_shape_max_area_ratio: float = 0.15  # 너무 큰 SHAPE은 카드 배경 → vector 부적합
+    # SAM 3 (PCS) — 텍스트 정밀 마스크 (잔재 해소)
+    use_sam3_text_masks: bool = True  # OCR bbox → SAM 3 box-prompt → 정밀 글자 마스크
+    sam3_supplement_text_prompt: bool = True  # OCR 미검출 텍스트 보충 (prompt='text')
+    sam3_text_threshold: float = 0.3  # 'text' prompt 임계 (관대 — 모든 텍스트 capture)
+    sam3_text_dilate_px: int = 5  # SAM 3 마스크 union 후 dilate (안티앨리어싱 가장자리 흡수)
+    extract_text_attributes: bool = True  # SAM 3 마스크로 글자 색상/크기 추정
 
 
 def convert(
@@ -192,7 +207,7 @@ def convert(
             ln for ln in ocr_lines if ln.confidence >= options.inpaint_min_confidence
         ]
 
-        # SAM 객체 분리 (옵션). 실패해도 인페인팅은 계속 (OCR bbox fallback).
+        # SAM 2.1 객체 분리 (도형 검출 + vectorize 입력) — SAM 3는 grid auto-mask 미지원이라 SAM 2.1 유지
         sam_result: Sam2Result | None = None
         classification: ClassificationResult | None = None
         if options.use_sam:
@@ -210,11 +225,36 @@ def convert(
                     image_size=(im_w, im_h),
                 )
             except Exception as exc:
-                qa_warnings.append(f"slide {idx} SAM 실패 (OCR bbox fallback): {exc}")
+                qa_warnings.append(f"slide {idx} SAM2 실패 (OCR bbox fallback): {exc}")
                 sam_result = None
                 classification = None
 
-        # 인페인팅: SAM TEXT 마스크 우선 + (SAM이 못 잡은) OCR fallback
+        # SAM 3 box-prompt — OCR bbox 별 정밀 텍스트 마스크 (잔재 해소)
+        sam3_box_result: Sam3Result | None = None
+        sam3_text_result: Sam3Result | None = None
+        if options.use_sam3_text_masks and mask_lines:
+            try:
+                sam3_box_result = run_sam3_box_prompts(
+                    png_path,
+                    [ln.bbox for ln in mask_lines],
+                )
+            except Exception as exc:
+                qa_warnings.append(f"slide {idx} SAM3 box-prompt 실패: {exc}")
+                sam3_box_result = None
+
+        # SAM 3 text-prompt 'text' — OCR 미검출 텍스트 영역 보충 (인페인팅에만 사용)
+        if options.use_sam3_text_masks and options.sam3_supplement_text_prompt:
+            try:
+                sam3_text_result = run_sam3_text_prompt(
+                    png_path,
+                    "text",
+                    threshold=options.sam3_text_threshold,
+                )
+            except Exception as exc:
+                qa_warnings.append(f"slide {idx} SAM3 text-prompt 실패: {exc}")
+                sam3_text_result = None
+
+        # 인페인팅
         background_path = png_path
         if options.inpaint and mask_lines:
             try:
@@ -223,6 +263,8 @@ def convert(
                     image_size=(im_w, im_h),
                     mask_lines=mask_lines,
                     classification=classification,
+                    sam3_box_result=sam3_box_result,
+                    sam3_text_result=sam3_text_result,
                     options=options,
                 )
                 inpaint_dir = workdir / "inpainted"
@@ -241,12 +283,50 @@ def convert(
             background_path=background_path,
         )
 
+        # SAM 3 box-prompt 결과를 mask_lines 인덱스로 매핑 (글자 속성 추출용)
+        sam3_mask_by_box: dict[int, np.ndarray] = {}
+        if sam3_box_result is not None:
+            for sm in sam3_box_result.masks:
+                if sm.source_box_idx is not None:
+                    sam3_mask_by_box[sm.source_box_idx] = sm.segmentation
+        # mask_lines → accepted_lines 인덱스 매핑 (mask_lines가 더 큰 집합)
+        accepted_to_mask_idx: dict[int, int] = {}
+        for ai, al in enumerate(accepted_lines):
+            for mli, ml in enumerate(mask_lines):
+                if ml is al:
+                    accepted_to_mask_idx[ai] = mli
+                    break
+
+        slide_pil_for_attr: Image.Image | None = None
         for k, line in enumerate(accepted_lines):
             n_text_total += 1
             n_text_editable += 1
 
             bbox_px = line.bbox
             bbox_emu = coord.px_bbox_to_emu(bbox_px)
+
+            # 글자 색상/크기 추출 (SAM 3 정밀 마스크가 있을 때만)
+            color = "#000000"
+            font_size_pt: float | None = None
+            mask_h_px = bbox_px[3]
+            if options.extract_text_attributes:
+                mi: int | None = accepted_to_mask_idx.get(k)
+                seg: np.ndarray | None = (
+                    sam3_mask_by_box.get(mi) if mi is not None else None
+                )
+                if seg is not None:
+                    if slide_pil_for_attr is None:
+                        slide_pil_for_attr = Image.open(png_path).convert("RGB")
+                    est_color = estimate_font_color(slide_pil_for_attr, seg)
+                    if est_color is not None:
+                        color = est_color
+                    # 마스크 height (실제 글자 영역) — bbox보다 더 정확
+                    ys_seg = np.nonzero(seg)[0]
+                    if ys_seg.size > 0:
+                        mask_h_px = float(ys_seg.max() - ys_seg.min() + 1)
+                font_size_pt = estimate_font_size_pt(
+                    mask_h_px, is_korean=detect_korean(line.text)
+                )
 
             obj = Object(
                 id=f"{slide.id}_obj_{k:03d}",
@@ -260,6 +340,8 @@ def convert(
                 text=TextPayload(
                     content=line.text,
                     confidence=line.confidence,
+                    color=color,
+                    font_size_pt=font_size_pt,
                 ),
             )
             slide.objects.append(obj)
@@ -411,11 +493,19 @@ def _compose_pptx(project: Project, output_path: Path) -> None:
             tb = slide.shapes.add_textbox(Emu(x), Emu(y), Emu(w), Emu(h))
             tf = tb.text_frame
             tf.word_wrap = True
+            tf.margin_left = 0
+            tf.margin_right = 0
+            tf.margin_top = 0
+            tf.margin_bottom = 0
             p = tf.paragraphs[0]
             run = p.add_run()
             run.text = obj.text.content
             if obj.text.font_size_pt:
                 run.font.size = Pt(obj.text.font_size_pt)
+            if obj.text.color and obj.text.color != "#000000":
+                with contextlib.suppress(Exception):
+                    rgb = obj.text.color.lstrip("#")
+                    run.font.color.rgb = RGBColor.from_string(rgb)  # type: ignore[no-untyped-call]
             # 배경 PNG와 겹치지 않도록 텍스트박스 자체는 채움 없음 (기본)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -428,39 +518,68 @@ def _inpaint_slide(
     image_size: tuple[int, int],
     mask_lines: list[OcrLine],
     classification: ClassificationResult | None,
+    sam3_box_result: Sam3Result | None = None,
+    sam3_text_result: Sam3Result | None = None,
     options: ConvertOptions,
 ) -> Image.Image:
     """슬라이드 1장 인페인팅.
 
-    전략:
-      - 인페인팅 영역은 OCR 사각 bbox + padding (이미 잘 작동, proven).
-      - SAM의 가치는 *도형 보호*: SHAPE 마스크 영역은 인페인팅 대상에서 제외.
-        → 게이지/아이콘이 OCR bbox와 겹쳐도 지워지지 않음.
-      - SAM TEXT 마스크는 안티앨리어싱 가장자리가 남는 문제로 인페인팅에 직접 쓰지 않음.
+    전략 (품질 우선):
+      - **SAM 3 box-prompt 마스크** (OCR bbox별 정밀 글자 ink): 가장 정확,
+        안티앨리어싱까지 fit → 잔재 거의 없음.
+      - **SAM 3 text-prompt 'text' 마스크**: OCR이 못 잡은 텍스트 영역 보충.
+      - **OCR 사각 bbox fallback**: SAM 3가 박스에 매칭 못한 OCR 라인.
+      - **SHAPE 픽셀 보호**: SAM 2.1 SHAPE 영역은 인페인팅 제외 (게이지 등).
     """
-    bboxes = [ln.bbox for ln in mask_lines]
-    if classification is None:
-        # SAM 미사용 → 기존 경로
-        result = inpaint_background(
-            png_path,
-            bboxes,
+    import cv2
+
+    pil = Image.open(png_path).convert("RGB")
+    w, h = image_size
+
+    # 1. 인페인팅 마스크 빌드 — 하이브리드 (각 영역의 장점 결합):
+    #   (a) OCR rect + padding: 큰 한글 외곽선까지 안전하게 덮음 (proven)
+    #   (b) SAM 3 box-prompt: OCR bbox 안 정밀 글자 ink (잔재 fade 더 줄임)
+    #   (c) SAM 3 text-prompt: OCR 미검출 텍스트 영역 (영문 라벨 등)
+    #   (d) 모두 union → 큰 dilate(7)로 가장자리 흡수
+    inpaint_arr = np.zeros((h, w), dtype=np.uint8)
+
+    # (a) OCR rect mask (기본, 큰 잔재 방지)
+    if mask_lines:
+        ocr_rect = _bboxes_to_mask(
+            [ln.bbox for ln in mask_lines],
+            image_size=image_size,
             padding=options.inpaint_padding_px,
             dilate_kernel=options.inpaint_dilate_px,
         )
-        if isinstance(result, tuple):
-            result = result[0]
-        return result
+        inpaint_arr = np.maximum(
+            inpaint_arr, np.asarray(ocr_rect.convert("L"), dtype=np.uint8)
+        )
 
-    pil = Image.open(png_path).convert("RGB")
+    # (b) SAM 3 box-prompt 정밀 마스크 추가 union
+    if sam3_box_result is not None and options.use_sam3_text_masks:
+        for sm in sam3_box_result.masks:
+            if sm.segmentation.shape == (h, w):
+                inpaint_arr[sm.segmentation] = 255
 
-    # 1. OCR 기반 인페인팅 마스크 (기존 방식, 잘 작동)
-    ocr_mask_pil = _bboxes_to_mask(
-        bboxes,
-        image_size=image_size,
-        padding=options.inpaint_padding_px,
-        dilate_kernel=options.inpaint_dilate_px,
-    )
-    ocr_mask_arr = np.asarray(ocr_mask_pil.convert("L"), dtype=np.uint8)
+    # (c) SAM 3 text-prompt 'text' 보충 (OCR 미검출 영역)
+    if sam3_text_result is not None and options.sam3_supplement_text_prompt:
+        for sm in sam3_text_result.masks:
+            if sm.segmentation.shape == (h, w):
+                inpaint_arr[sm.segmentation] = 255
+
+    # (d) 추가 dilate — SAM 3 정밀 마스크의 안티앨리어싱 흡수
+    if options.sam3_text_dilate_px > 0:
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (options.sam3_text_dilate_px, options.sam3_text_dilate_px)
+        )
+        inpaint_arr = cv2.dilate(inpaint_arr, kernel, iterations=1).astype(np.uint8)
+
+    if classification is None:
+        # SHAPE 보호 없이 그대로
+        return inpaint_with_mask(pil, Image.fromarray(inpaint_arr, mode="L"))
+
+    # legacy ocr_mask_arr (SHAPE 보호 로직 호환용 — 현재는 SAM 3 마스크가 정확하므로 보호 마스크 영향 적음)
+    ocr_mask_arr = inpaint_arr
 
     # 2. SHAPE 보호 마스크: SAM이 "도형"으로 분류한 픽셀 중,
     #    OCR과 (실질적으로) 겹치지 않는 것만 보호한다.

@@ -47,7 +47,8 @@ class Sam3Mask:
     bbox: Bbox  # (x, y, w, h) 픽셀 단위
     segmentation: NDArray[np.bool_]  # (H, W) bool
     score: float
-    concept: str  # 어떤 prompt에서 검출됐는지
+    concept: str  # 어떤 prompt에서 검출됐는지 (box prompt면 'box:<idx>')
+    source_box_idx: int | None = None  # box-prompt에서 어느 입력 박스에 매칭됐는가
 
 
 @dataclass
@@ -181,4 +182,171 @@ def run_sam3(
 
         result.elapsed_per_prompt[prompt] = time.perf_counter() - t0
 
+    return result
+
+
+def run_sam3_box_prompts(
+    image: Path | NDArray[np.uint8] | Image.Image,
+    boxes_xywh: list[Bbox],
+    *,
+    model_id: str = DEFAULT_MODEL_ID,
+    device: str = "auto",
+    threshold: float = 0.0,
+    mask_threshold: float = 0.5,
+) -> Sam3Result:
+    """OCR bbox 리스트 → 박스별 정밀 마스크 (per-box forward).
+
+    PCS 패러다임의 핵심 활용 — 외부에서 박스를 주면 그 박스 안 객체의
+    *정밀 픽셀 마스크* 반환. OCR이 텍스트 박스를 제공하므로 박스당 글자
+    ink 픽셀까지 정확히 segment.
+
+    threshold=0.0: 박스마다 mask 1개 보장 (drop 방지). best score 마스크 채택.
+    PoC 검증: per-box forward가 batched 모드보다 누락 없음 (24/24).
+    """
+    import time
+
+    pil = _to_pil(image)
+    w, h = pil.size
+    dev = _select_device(device)
+    model, processor = _load_sam3(model_id=model_id, device=dev)
+
+    result = Sam3Result(image_size=(w, h), device=dev)
+    t0 = time.perf_counter()
+
+    for i, box_xywh in enumerate(boxes_xywh):
+        bx, by, bw, bh = box_xywh
+        if bw <= 0 or bh <= 0:
+            continue
+        box_xyxy = [[float(bx), float(by), float(bx + bw), float(by + bh)]]
+        try:
+            inputs = processor(
+                images=pil,
+                input_boxes=[box_xyxy],
+                input_boxes_labels=[[1]],
+                return_tensors="pt",
+            ).to(dev)
+            with torch.no_grad():
+                outputs = model(**inputs)
+            target_sizes_t = inputs.get("original_sizes")
+            target_sizes = (
+                target_sizes_t.tolist() if target_sizes_t is not None else [[h, w]]
+            )
+            post = processor.post_process_instance_segmentation(
+                outputs,
+                threshold=threshold,
+                mask_threshold=mask_threshold,
+                target_sizes=target_sizes,
+            )[0]
+        except Exception:
+            continue
+
+        masks_t = post.get("masks")
+        scores_t = post.get("scores")
+        if masks_t is None or scores_t is None or len(masks_t) == 0:
+            continue
+
+        scores_np = scores_t.detach().cpu().numpy().astype(float)
+        if len(scores_np) == 0:
+            continue
+        best = int(scores_np.argmax())
+
+        m = masks_t[best].detach().cpu().numpy()
+        if m.dtype != bool:
+            m = m.astype(bool)
+        if m.ndim == 3:
+            m = m.squeeze(0)
+        if m.shape != (h, w):
+            continue
+        bbox = mask_to_bbox(m)
+        if bbox is None:
+            continue
+
+        result.masks.append(
+            Sam3Mask(
+                bbox=bbox,
+                segmentation=m,
+                score=float(scores_np[best]),
+                concept=f"box:{i}",
+                source_box_idx=i,
+            )
+        )
+
+    result.elapsed_per_prompt["__box_prompt_total__"] = time.perf_counter() - t0
+    return result
+
+
+def run_sam3_text_prompt(
+    image: Path | NDArray[np.uint8] | Image.Image,
+    prompt: str,
+    *,
+    model_id: str = DEFAULT_MODEL_ID,
+    device: str = "auto",
+    threshold: float = 0.3,
+    mask_threshold: float = 0.5,
+    max_masks: int = 200,
+) -> Sam3Result:
+    """단일 text 컨셉 prompt로 그 컨셉의 모든 인스턴스 마스크.
+
+    OCR 미검출 텍스트(prompt='text'), 특정 도형 카테고리(prompt='chart',
+    'graphic', 'rectangle' 등) 검출 등에 활용.
+
+    threshold 권장:
+      - 'text' 0.3 (잔재 보충용 — 관대한 임계로 모든 텍스트 영역 capture)
+      - 'chart'/'graphic'/'rectangle' 0.5
+    """
+    import time
+
+    pil = _to_pil(image)
+    w, h = pil.size
+    dev = _select_device(device)
+    model, processor = _load_sam3(model_id=model_id, device=dev)
+
+    result = Sam3Result(image_size=(w, h), device=dev)
+    t0 = time.perf_counter()
+
+    try:
+        inputs = processor(images=pil, text=prompt, return_tensors="pt").to(dev)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        target_sizes_t = inputs.get("original_sizes")
+        target_sizes = target_sizes_t.tolist() if target_sizes_t is not None else [[h, w]]
+        post = processor.post_process_instance_segmentation(
+            outputs,
+            threshold=threshold,
+            mask_threshold=mask_threshold,
+            target_sizes=target_sizes,
+        )[0]
+    except Exception as exc:
+        result.elapsed_per_prompt[prompt] = -1.0
+        print(f"[sam3] text prompt={prompt!r} 실패: {exc}")
+        return result
+
+    masks_t = post.get("masks")
+    scores_t = post.get("scores")
+    if masks_t is None or scores_t is None:
+        result.elapsed_per_prompt[prompt] = time.perf_counter() - t0
+        return result
+
+    masks_np = masks_t.detach().cpu().numpy().astype(bool)
+    scores_np = scores_t.detach().cpu().numpy().astype(float)
+    n_keep = min(len(masks_np), max_masks)
+    for i in range(n_keep):
+        m = masks_np[i]
+        if m.ndim == 3:
+            m = m.squeeze(0)
+        if m.shape != (h, w):
+            continue
+        bbox = mask_to_bbox(m)
+        if bbox is None:
+            continue
+        result.masks.append(
+            Sam3Mask(
+                bbox=bbox,
+                segmentation=m,
+                score=float(scores_np[i]),
+                concept=prompt,
+            )
+        )
+
+    result.elapsed_per_prompt[prompt] = time.perf_counter() - t0
     return result
