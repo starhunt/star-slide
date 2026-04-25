@@ -37,13 +37,14 @@
 3. ChartGemma 라이선스 위험 → DePlot 채택
 4. python-pptx custGeom 직접 임포트 미지원 → 자체 변환기 필수
 
-## 다음 단계 (즉시)
+## 다음 단계 (Phase 0 → Phase 1)
 
 1. **사용자 PowerPoint H2 시각 검증** (1회):
-   `open experiments/h2_custgeom/results/h2_shapes.pptx` → 도형 우클릭 "점 편집" 진입 확인
-2. **사용자 GPU 환경에서 SAM 3.1 가중치 다운로드** (P0-T03 차단 해제)
-3. P0-T03 H1 SAM 3.1 추론 코드 작성 + IoU 측정
-4. (선택) GT 라벨 보강 → H3 정확한 CER 재측정
+   `open experiments/h2_custgeom/results/h2_shapes.pptx` → 도형 우클릭 "점 편집"
+2. **사용자 SAM 3 HuggingFace access 요청** (선택):
+   https://huggingface.co/facebook/sam3 → access 획득 시 sam3.py로 교체
+3. **Phase 0 Exit Gate 검토** + **Phase 1 진입 결정**
+4. (선택) GT 라벨 보강 → H1/H3 정밀 재측정
 
 ## 관찰 사항 (Phase 0 데이터셋 분석)
 
@@ -69,6 +70,12 @@
   - 13종 도형(simple 10 + cubic 3) 모두 변환+주입 성공
   - 41 단위 테스트 통과 (svg2custgeom 8개 추가)
   - PowerPoint 시각 검증만 사용자 1회 필요
+- ✅ **H1 SAM 슬라이드 객체 분리** — GO (SAM 2.1 fallback)
+  - SAM 3는 gated repo → SAM 2.1 hiera-large + transformers mask-generation pipeline 사용
+  - Mac MPS 4.9s/슬라이드, 491 마스크 / 10 슬라이드
+  - text recall@contain≥0.7 = 0.719 (4 슬라이드 100%, 일부 process 카테고리 0%)
+  - 시각 검수: table/title/comparison 양호, process는 큰 frame 마스크 효과
+  - Phase 1에서 SAM 3 access 요청 + 마스크 면적 필터 적용 권장
 
 ## Phase 0 가설 검증 일정
 
