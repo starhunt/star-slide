@@ -1,7 +1,7 @@
 # Star-Slide Session Continuity
 
 > 매 세션 종료 전 갱신. 새 세션 시작 시 가장 먼저 읽기.
-> 마지막 갱신: 2026-04-25 (Phase 1 P1-T03/T04 SAM 통합 완료 시점)
+> 마지막 갱신: 2026-04-25 (Phase 1 P1-T08 vtracer 통합 완료 시점)
 
 ---
 
@@ -64,7 +64,7 @@ PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
 | P1-T05 OCR Worker | ✅ | (Phase 0에서 완성) |
 | P1-T06 LaMa 인페인팅 | ✅ | 파이프라인 통합 완료, 잔재 거의 없음 |
 | P1-T07 폰트 매칭 | ⏳ | 후속 |
-| P1-T08 vtracer/custGeom | ✅ | (Phase 0 H2에서 완성) — 파이프라인 미통합 |
+| P1-T08 vtracer/custGeom | ✅ | 파이프라인 통합 완료. 69개 native custGeom 도형 주입, 편집 비율 52→71% |
 | P1-T09 표 복원 | ⏳ | 후속 |
 | P1-T10 Composer | ✅ | 텍스트박스 + 배경 PNG 합성 |
 | P1-T11 Visual QA | ⏳ | 후속 |
@@ -90,8 +90,8 @@ PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
 
 ## 코드베이스 현황
 
-- **Python 패키지**: 42 source files, mypy strict GREEN, ruff GREEN
-- **테스트**: 61 unit tests passing (+7 classify)
+- **Python 패키지**: 44 source files, mypy strict GREEN, ruff GREEN
+- **테스트**: 71 unit tests passing (+10 vtracer_wrapper)
 - **모듈**:
   - `star_slide/schema/` — Layer Schema (pydantic)
   - `star_slide/input/` — 검증 + PPTX 추출
@@ -116,9 +116,11 @@ vtracer 0.6.5 (cargo install, ~/.cargo/bin/vtracer)
 ## 사용자 결정 대기 중
 
 - [ ] LibreOffice 설치 여부 (현재 `--no-libreoffice` fallback 사용)
-- [ ] SAM 3 HuggingFace access 요청 (선택)
+- [x] SAM 3 / SAM 3.1 HuggingFace access 요청 — **사용자 신청함, 승인 대기 중**
+  - facebook/sam3 (transformers Sam3Model 정식 지원) + facebook/sam3.1 (multiplex .pt, library=checkpoint, transformers 직접 로드 미확인)
+  - 승인 시 `star_slide/segmentation/sam3.py` 신규 작성 → ADR-001 갱신
 - [ ] PowerPoint H2 시각 검증 (1회): 13 도형 점 편집 메뉴 확인
-- [ ] sample2_edited.pptx 직접 검증 (텍스트 편집 가능 여부)
+- [ ] sample2_edited.pptx 직접 검증 (69개 native custGeom 도형 + 193 textbox 편집 가능 여부)
 
 ## Mistakes & Learnings
 

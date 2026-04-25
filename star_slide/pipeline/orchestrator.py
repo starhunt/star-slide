@@ -19,6 +19,7 @@ Phase 1 MVP 범위:
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,8 +28,12 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
 from pptx.util import Emu, Pt
 
+from star_slide.composer.inject import replace_geometry_with_custgeom
+from star_slide.composer.vectorize import VectorizedShape, vectorize_shape
 from star_slide.inpaint.lama import (
     _bboxes_to_mask,
     inpaint_background,
@@ -75,13 +80,15 @@ class ConvertOptions:
     inpaint_padding_px: int = 12
     inpaint_dilate_px: int = 7
     inpaint_min_confidence: float = 0.3  # 마스크에 포함할 OCR 임계 (관대)
-    vectorize_shapes: bool = False  # P1-T08 이후 활성화
+    vectorize_shapes: bool = True  # P1-T08: vtracer로 native shape (custGeom) 변환
     use_sam: bool = True  # P1-T03/T04: SAM 객체 분리 + SAM 마스크 기반 인페인팅
     sam_text_dilate_px: int = 3  # SAM TEXT 마스크용 dilate (정밀해서 작게)
     sam_pred_iou_thresh: float = 0.86
     sam_stability_thresh: float = 0.92
     sam_points_per_side: int = 32
     sam_max_masks: int = 200
+    vectorize_shape_min_area_ratio: float = 0.001  # vtracer 입력 최소 면적 (0.1%)
+    vectorize_shape_max_area_ratio: float = 0.15  # 너무 큰 SHAPE은 카드 배경 → vector 부적합
 
 
 def convert(
@@ -257,13 +264,32 @@ def convert(
             )
             slide.objects.append(obj)
 
-        # SAM SHAPE 후보를 Layer Schema에 기록 (P1-T08 vtracer 입력)
+        # SAM SHAPE → vtracer → custGeom (P1-T08)
         if classification is not None:
             shape_offset = len(slide.objects)
+            slide_pil_for_vec: Image.Image | None = None
+            shape_min_px = options.vectorize_shape_min_area_ratio * im_w * im_h
+            shape_max_px = options.vectorize_shape_max_area_ratio * im_w * im_h
             for j, cm in enumerate(classification.classified):
                 if cm.cls != MaskClass.SHAPE:
                     continue
-                bbox_px = cm.mask.bbox
+
+                vec: VectorizedShape | None = None
+                if (
+                    options.vectorize_shapes
+                    and shape_min_px <= cm.mask.area <= shape_max_px
+                ):
+                    if slide_pil_for_vec is None:
+                        slide_pil_for_vec = Image.open(png_path).convert("RGB")
+                    try:
+                        vec = vectorize_shape(slide_pil_for_vec, cm.mask.segmentation)
+                    except Exception as exc:
+                        qa_warnings.append(
+                            f"slide {idx} shape {j} vectorize 실패: {exc}"
+                        )
+                        vec = None
+
+                bbox_px = vec.bbox if vec is not None else cm.mask.bbox
                 bbox_emu = coord.px_bbox_to_emu(bbox_px)
                 shape_obj = Object(
                     id=f"{slide.id}_shape_{shape_offset + j:03d}",
@@ -271,9 +297,12 @@ def convert(
                     bbox_px=bbox_px,
                     bbox_emu=bbox_emu,
                     confidence=cm.mask.score,
-                    editable_level=EditableLevel.RASTER,  # P1-T08에서 VECTOR로 승격 예정
+                    editable_level=(
+                        EditableLevel.VECTOR if vec is not None else EditableLevel.RASTER
+                    ),
                     source=SourceAssets(detector="sam2.1_hiera_large"),
                     qa=Qa(),
+                    shape=vec.payload if vec is not None else None,
                 )
                 slide.objects.append(shape_obj)
 
@@ -283,11 +312,12 @@ def convert(
     project.state = JobState.RECONSTRUCTING
     _compose_pptx(project, output_path)
 
-    # 4. 품질 리포트
+    # 4. 품질 리포트 — NATIVE(텍스트박스) + VECTOR(custGeom 도형) 모두 편집 가능으로 카운트
     project.state = JobState.READY
     n_objects = sum(len(s.objects) for s in project.slides)
+    editable_levels = {EditableLevel.NATIVE, EditableLevel.VECTOR}
     avg_editable = sum(
-        1 for s in project.slides for o in s.objects if o.editable_level == EditableLevel.NATIVE
+        1 for s in project.slides for o in s.objects if o.editable_level in editable_levels
     ) / max(1, n_objects)
     report = QaReport(
         project_id=project.id,
@@ -347,6 +377,31 @@ def _compose_pptx(project: Project, output_path: Path) -> None:
             width=Emu(slide_data.size.width_emu),
             height=Emu(slide_data.size.height_emu),
         )
+
+        # 도형 (SHAPE) — vtracer custGeom 변환된 native shape
+        for obj in slide_data.objects:
+            if (
+                obj.type != ObjectType.SHAPE
+                or obj.shape is None
+                or obj.bbox_emu is None
+                or obj.shape.custgeom_xml is None
+            ):
+                continue
+            x, y, w, h = obj.bbox_emu
+            if w <= 0 or h <= 0:
+                continue
+            sh = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Emu(x), Emu(y), Emu(w), Emu(h))
+            try:
+                replace_geometry_with_custgeom(sh, obj.shape.custgeom_xml)
+            except Exception:
+                continue
+            if obj.shape.fill:
+                with contextlib.suppress(Exception):
+                    rgb = obj.shape.fill.lstrip("#")
+                    sh.fill.solid()
+                    sh.fill.fore_color.rgb = RGBColor.from_string(rgb)  # type: ignore[no-untyped-call]
+            with contextlib.suppress(Exception):
+                sh.line.fill.background()
 
         # 텍스트 객체
         for obj in slide_data.objects:
