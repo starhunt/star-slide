@@ -39,12 +39,11 @@
 
 ## 다음 단계 (즉시)
 
-1. **사용자 라벨링 작업** (10장, `data/labels/notebooklm/H1_PRIORITY_TRACKING.md` 참조)
-   - 1차 필수: ground_truth_text (정답 한글 텍스트 입력)
-   - 2차: objects[] 배열 (bbox + 텍스트 객체 분류)
-2. **사용자 GPU 환경에서 SAM 3.1 가중치 다운로드**
-3. P0-T03 SAM 3.1 추론 코드 완성 (현재 loader.py placeholder, 라벨/모델 준비 후 채움)
-4. P0-T04/T05 (H2 custGeom + H3 OCR) 병렬 진행 가능
+1. **사용자 PowerPoint H2 시각 검증** (1회):
+   `open experiments/h2_custgeom/results/h2_shapes.pptx` → 도형 우클릭 "점 편집" 진입 확인
+2. **사용자 GPU 환경에서 SAM 3.1 가중치 다운로드** (P0-T03 차단 해제)
+3. P0-T03 H1 SAM 3.1 추론 코드 작성 + IoU 측정
+4. (선택) GT 라벨 보강 → H3 정확한 CER 재측정
 
 ## 관찰 사항 (Phase 0 데이터셋 분석)
 
@@ -62,6 +61,14 @@
   - 평균 217자/슬라이드, 총 2,082자
   - 큰 텍스트 정확, 작은 텍스트는 1376x768 해상도에서 보이는 만큼
   - 사용자 검수는 H3 측정 전 권장 (필수는 아님)
+- ✅ **H3 PaddleOCR CER 측정 완료** — GO with caveat
+  - slide5: CER 0.026, slide7: CER 0.067 (둘 다 H3 GREEN)
+  - 평균 0.648은 GT에 일러스트 안 영문 텍스트 누락 때문
+  - PaddleOCR 한국어 OCR 자체는 양호 → ADR-002 그대로 채택
+- ✅ **H2 svg→custGeom 변환기 완성** — GO
+  - 13종 도형(simple 10 + cubic 3) 모두 변환+주입 성공
+  - 41 단위 테스트 통과 (svg2custgeom 8개 추가)
+  - PowerPoint 시각 검증만 사용자 1회 필요
 
 ## Phase 0 가설 검증 일정
 
