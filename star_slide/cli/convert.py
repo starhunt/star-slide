@@ -58,6 +58,71 @@ def run(
         "--sam/--no-sam",
         help="SAM 객체 분리 + SAM 정밀 마스크 인페인팅 (기본 ON)",
     ),
+    use_sam3_elements: bool = typer.Option(
+        False,
+        "--sam3-elements/--no-sam3-elements",
+        help="SAM3 multi-prompt로 도형/아이콘/사진 요소를 분리해 SVG와 선택 가능 객체 생성",
+    ),
+    emit_svg: bool = typer.Option(
+        True,
+        "--emit-svg/--no-svg",
+        help="SAM3 요소 분리 결과를 workdir/sam3_svg/*.svg 로 저장",
+    ),
+    sam3_threshold: float = typer.Option(
+        0.5,
+        "--sam3-threshold",
+        help="SAM3 요소 검출 confidence threshold",
+    ),
+    sam3_max_masks: int = typer.Option(
+        30,
+        "--sam3-max-masks",
+        help="SAM3 prompt별 최대 마스크 수",
+    ),
+    render_max_width: int = typer.Option(
+        1600,
+        "--render-max-width",
+        help="OCR/SAM 분석용 렌더 PNG 최대 폭(px). 0이면 원본 렌더 크기 유지",
+    ),
+    visible_text: bool = typer.Option(
+        False,
+        "--visible-text/--hidden-text",
+        help="OCR 텍스트를 화면에 보이게 덮어쓰기. 기본은 원본 시각 보존을 위해 투명 편집 레이어",
+    ),
+    preserve_background: bool = typer.Option(
+        True,
+        "--preserve-background/--inpaint-background",
+        help="원본 렌더 배경을 보존. 기본 ON이면 시각 품질 우선, OFF이면 인페인팅 배경 사용",
+    ),
+    text_size_scale: float = typer.Option(
+        0.92,
+        "--text-size-scale",
+        help="OCR 텍스트 폰트 크기 보정 배율",
+    ),
+    use_vision_llm: bool = typer.Option(
+        False,
+        "--vision-llm/--no-vision-llm",
+        help="OCR+SAM 대신 Vision LLM (cliproxy)로 슬라이드 → 구조 JSON 추출",
+    ),
+    vision_base_url: str = typer.Option(
+        "http://localhost:8300/v1",
+        "--vision-base-url",
+        help="Vision LLM endpoint (cliproxy 호환)",
+    ),
+    vision_model: str = typer.Option(
+        "claude-opus-4-6",
+        "--vision-model",
+        help="Vision LLM 모델 ID",
+    ),
+    vision_api_key: str = typer.Option(
+        "",
+        "--vision-api-key",
+        help="Vision LLM API key (비어있으면 VISION_PROXY_API_KEY/LOCAL_CLAUDE_API_KEY 환경변수)",
+    ),
+    vision_timeout: float = typer.Option(
+        240.0,
+        "--vision-timeout",
+        help="Vision LLM 호출 타임아웃 (초)",
+    ),
 ) -> None:
     """input → output 변환."""
     if not input_path.exists():
@@ -72,6 +137,19 @@ def run(
         ocr_min_confidence=ocr_conf,
         inpaint=inpaint,
         use_sam=use_sam,
+        use_sam3_elements=use_sam3_elements,
+        emit_svg=emit_svg,
+        sam3_element_threshold=sam3_threshold,
+        sam3_element_max_masks_per_concept=sam3_max_masks,
+        render_max_width_px=render_max_width if render_max_width > 0 else None,
+        visible_text_overlay=visible_text,
+        preserve_original_background=preserve_background,
+        text_size_scale=text_size_scale,
+        use_vision_llm=use_vision_llm,
+        vision_base_url=vision_base_url,
+        vision_model=vision_model,
+        vision_api_key=vision_api_key,
+        vision_timeout_sec=vision_timeout,
     )
 
     t0 = time.perf_counter()

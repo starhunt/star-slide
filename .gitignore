@@ -50,16 +50,9 @@ Thumbs.db
 .env.*.local
 
 # Runtime data (large) — manifest/라벨 JSON과 가이드는 추적, 이미지/원본만 제외
+data/
 storage/
 models/
-data/font_embeddings/
-data/samples/**/*.png
-data/samples/**/*.jpg
-data/samples/**/*.jpeg
-data/samples/**/*.zip
-data/samples/**/*.pdf
-data/golden/input/
-data/golden/expected/
 
 # 원본 PPTX (refdata) — 사용자가 명시적으로 git add 하기 전엔 제외
 refdata/
@@ -69,9 +62,8 @@ output/*
 !output/.gitkeep
 !output/README.md
 
-# Experiment outputs
-experiments/*/results/
-experiments/*/.cache/
+# Experiments
+experiments/
 
 # Build artifacts
 *.whl
