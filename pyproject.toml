@@ -96,6 +96,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "S101"]
 "experiments/**" = ["E", "F", "I"]
+"star_slide/cli/**" = ["B008"]  # typer.Argument/Option은 default에서 호출
 
 # === Mypy ===
 [tool.mypy]

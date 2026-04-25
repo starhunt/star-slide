@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from star_slide import __version__
+from star_slide.cli import convert as convert_cmd
 from star_slide.cli import label as label_cmd
 
 app = typer.Typer(
@@ -17,6 +18,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+app.add_typer(convert_cmd.app, name="convert", help="입력 → 편집 가능 PPTX 변환.")
 app.add_typer(label_cmd.app, name="label", help="H1 라벨링 헬퍼.")
 console = Console()
 

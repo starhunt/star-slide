@@ -1,0 +1,283 @@
+"""파이프라인 오케스트레이터 — Phase 1 단일 프로세스 실행.
+
+CLI `star-slide convert input.pptx -o output.pptx --report report.json` end-to-end.
+
+단계 (PRD §7.1):
+  1. 파일 검증
+  2. 슬라이드 추출 (PPTX/PDF/이미지)
+  3. (옵션) SAM 마스크 생성
+  4. OCR (텍스트 객체 추출)
+  5. PPTX 조립 (현재는 텍스트 + 원본 배경 합성)
+  6. 품질 리포트 JSON 출력
+
+Phase 1 MVP 범위:
+- 텍스트 객체 → PowerPoint 텍스트박스 (편집 가능)
+- 슬라이드 배경 = 원본 PNG (인페인팅은 P1-T06에서 추가)
+- 도형/아이콘 → vtracer + custGeom (P1-T08에서 추가, 현재는 스킵)
+- 표/차트 → 이미지 fallback
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+
+from PIL import Image
+from pptx import Presentation
+from pptx.util import Emu, Pt
+
+from star_slide.input.pptx_extractor import inspect_pptx
+from star_slide.input.validator import validate
+from star_slide.ocr.metrics import cer
+from star_slide.ocr.paddleocr_worker import run_ocr
+from star_slide.rasterize.coords import CoordTransform
+from star_slide.rasterize.libreoffice import (
+    LibreOfficeNotFoundError,
+    fallback_render_from_embedded,
+    render_pptx_to_pngs,
+)
+from star_slide.schema import (
+    EditableLevel,
+    JobState,
+    Object,
+    ObjectType,
+    Project,
+    Qa,
+    QaReport,
+    Slide,
+    SlideSize,
+    SourceAssets,
+    TextPayload,
+)
+
+
+@dataclass(frozen=True)
+class ConvertOptions:
+    """convert 명령 옵션."""
+
+    use_libreoffice: bool = True  # False면 임베드 이미지 직접 추출
+    ocr_min_confidence: float = 0.7
+    inpaint: bool = False  # P1-T06 이후 활성화
+    vectorize_shapes: bool = False  # P1-T08 이후 활성화
+
+
+def convert(
+    input_path: Path,
+    output_path: Path,
+    *,
+    workdir: Path | None = None,
+    options: ConvertOptions | None = None,
+    progress: object = None,
+) -> tuple[Project, QaReport]:
+    """input PPTX/PDF/이미지 → 편집 가능 PPTX + QaReport.
+
+    Args:
+        input_path: 입력 파일
+        output_path: 출력 PPTX 경로
+        workdir: 중간 산출물(렌더 PNG, 마스크 등) 저장 위치. None이면 output 옆에 자동.
+        options: 변환 옵션
+        progress: rich.progress 또는 None (단순 print)
+    """
+    options = options or ConvertOptions()
+    workdir = workdir or output_path.parent / f"_workdir_{output_path.stem}"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    project = Project(
+        id=f"prj_{uuid.uuid4().hex[:8]}",
+        source_file=input_path,
+        source_kind=validate(input_path),
+        state=JobState.QUEUED,
+    )
+
+    # Phase 1은 PPTX만 지원, PDF/이미지는 후속
+    if project.source_kind != "pptx":
+        raise NotImplementedError(
+            f"Phase 1 MVP는 PPTX만 지원. PDF/이미지는 후속 phase. (kind={project.source_kind})"
+        )
+
+    project.state = JobState.RASTERIZING
+
+    # 1. 슬라이드 추출 + 렌더링
+    slide_w_emu, slide_h_emu, infos = inspect_pptx(input_path)
+
+    render_dir = workdir / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+
+    if options.use_libreoffice:
+        try:
+            png_paths = render_pptx_to_pngs(input_path, render_dir)
+        except LibreOfficeNotFoundError:
+            png_paths = fallback_render_from_embedded(input_path, render_dir)
+    else:
+        png_paths = fallback_render_from_embedded(input_path, render_dir)
+
+    if len(png_paths) != len(infos):
+        # 렌더 슬라이드 수와 PPTX 슬라이드 수 다름 → 짧은 쪽 기준
+        n = min(len(png_paths), len(infos))
+        png_paths = png_paths[:n]
+        infos = infos[:n]
+
+    # 2. 슬라이드별 OCR + 객체 생성
+    project.state = JobState.DETECTING
+
+    qa_warnings: list[str] = []
+    n_text_total = 0
+    n_text_editable = 0
+    failed_slide_ids: list[str] = []
+
+    for idx, (_info, png_path) in enumerate(zip(infos, png_paths, strict=False), start=1):
+        try:
+            with Image.open(png_path) as im:
+                im_w, im_h = im.size
+        except Exception as exc:
+            failed_slide_ids.append(f"sld_{idx:03d}")
+            qa_warnings.append(f"slide {idx} 이미지 로드 실패: {exc}")
+            continue
+
+        coord = CoordTransform(
+            slide_width_emu=slide_w_emu,
+            slide_height_emu=slide_h_emu,
+            image_width_px=im_w,
+            image_height_px=im_h,
+        )
+
+        slide_size = SlideSize(
+            width_emu=slide_w_emu,
+            height_emu=slide_h_emu,
+            width_px=im_w,
+            height_px=im_h,
+            ratio=_ratio_str(slide_w_emu, slide_h_emu),
+        )
+
+        slide = Slide(
+            id=f"sld_{idx:03d}",
+            page_no=idx,
+            size=slide_size,
+            render_path=png_path,
+        )
+
+        # OCR
+        try:
+            ocr_lines = run_ocr(png_path, lang="korean")
+        except Exception as exc:
+            qa_warnings.append(f"slide {idx} OCR 실패: {exc}")
+            ocr_lines = []
+
+        for k, line in enumerate(ocr_lines):
+            if line.confidence < options.ocr_min_confidence:
+                continue
+            n_text_total += 1
+            n_text_editable += 1
+
+            bbox_px = line.bbox
+            bbox_emu = coord.px_bbox_to_emu(bbox_px)
+
+            obj = Object(
+                id=f"{slide.id}_obj_{k:03d}",
+                type=ObjectType.TEXT,
+                bbox_px=bbox_px,
+                bbox_emu=bbox_emu,
+                confidence=line.confidence,
+                editable_level=EditableLevel.NATIVE,
+                source=SourceAssets(crop_path=None, detector="paddleocr_ppocrv5"),
+                qa=Qa(),
+                text=TextPayload(
+                    content=line.text,
+                    confidence=line.confidence,
+                ),
+            )
+            slide.objects.append(obj)
+
+        project.slides.append(slide)
+
+    # 3. PPTX 조립
+    project.state = JobState.RECONSTRUCTING
+    _compose_pptx(project, output_path)
+
+    # 4. 품질 리포트
+    project.state = JobState.READY
+    n_objects = sum(len(s.objects) for s in project.slides)
+    avg_editable = sum(
+        1 for s in project.slides for o in s.objects if o.editable_level == EditableLevel.NATIVE
+    ) / max(1, n_objects)
+    report = QaReport(
+        project_id=project.id,
+        n_slides=len(project.slides),
+        n_objects=n_objects,
+        avg_editable_ratio=avg_editable,
+        text_objects_editable=n_text_editable,
+        text_objects_total=n_text_total,
+        failed_slide_ids=failed_slide_ids,
+        warnings=qa_warnings,
+    )
+
+    return project, report
+
+
+def _ratio_str(w_emu: int, h_emu: int) -> str:
+    if h_emu == 0:
+        return "?"
+    r = w_emu / h_emu
+    if abs(r - 16 / 9) < 0.01:
+        return "16:9"
+    if abs(r - 4 / 3) < 0.01:
+        return "4:3"
+    return f"{r:.2f}"
+
+
+def _compose_pptx(project: Project, output_path: Path) -> None:
+    """python-pptx로 결과 PPTX 조립.
+
+    각 슬라이드에 대해:
+    - 슬라이드 배경 = 원본 PNG (전체 슬라이드 영역)
+    - 텍스트 객체 → 투명 텍스트박스 (편집 가능)
+
+    Phase 1 단순화: 모든 텍스트박스는 흰 배경 텍스트 위에 덮어 그리지 않고,
+    원본 PNG를 배경으로 두고 그 위에 OCR 텍스트박스를 투명하게 배치.
+    Phase 2에서 인페인팅 + 텍스트박스로 교체.
+    """
+    if not project.slides:
+        raise ValueError("프로젝트에 슬라이드가 없습니다")
+
+    first = project.slides[0]
+    prs = Presentation()
+    prs.slide_width = Emu(first.size.width_emu)
+    prs.slide_height = Emu(first.size.height_emu)
+
+    blank_layout = prs.slide_layouts[6]
+
+    for slide_data in project.slides:
+        slide = prs.slides.add_slide(blank_layout)
+
+        # 배경 이미지 (전체 슬라이드 덮음)
+        slide.shapes.add_picture(
+            str(slide_data.render_path),
+            Emu(0),
+            Emu(0),
+            width=Emu(slide_data.size.width_emu),
+            height=Emu(slide_data.size.height_emu),
+        )
+
+        # 텍스트 객체
+        for obj in slide_data.objects:
+            if obj.type != ObjectType.TEXT or obj.text is None or obj.bbox_emu is None:
+                continue
+            x, y, w, h = obj.bbox_emu
+            tb = slide.shapes.add_textbox(Emu(x), Emu(y), Emu(w), Emu(h))
+            tf = tb.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            run = p.add_run()
+            run.text = obj.text.content
+            if obj.text.font_size_pt:
+                run.font.size = Pt(obj.text.font_size_pt)
+            # 배경 PNG와 겹치지 않도록 텍스트박스 자체는 채움 없음 (기본)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(str(output_path))
+
+
+def quick_self_check_cer(predicted: str, ground_truth: str) -> float:
+    """간단한 CER 측정 헬퍼 (CLI report 출력용)."""
+    return cer(predicted, ground_truth)
