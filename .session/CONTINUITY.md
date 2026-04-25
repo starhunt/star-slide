@@ -1,15 +1,14 @@
 # Star-Slide Session Continuity
 
 > 매 세션 종료 전 갱신. 새 세션 시작 시 가장 먼저 읽기.
-> 마지막 갱신: 2026-04-25 (Phase 1 P1-T06 완료 시점)
+> 마지막 갱신: 2026-04-25 (Phase 1 P1-T03/T04 SAM 통합 완료 시점)
 
 ---
 
 ## 현재 상태
 
 - **Phase**: Phase 1 (Vertical Slice MVP)
-- **GitHub**: https://github.com/starhunt/star-slide (private), main 브랜치, 11 커밋
-- **마지막 커밋**: `2227860 feat(inpaint): integrate LaMa text removal into pipeline`
+- **GitHub**: https://github.com/starhunt/star-slide (private), main 브랜치
 - **블로커**: 없음 (계속 진행 가능)
 
 ## End-to-End 작동 검증
@@ -19,10 +18,16 @@ PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
   uv run star-slide convert run refdata/sample2.pptx \
   -o output/sample2/sample2_edited.pptx \
   --no-libreoffice
-# → 105초, 10장, 193 textbox, 100% editable, LaMa 인페인팅 적용됨
+# → 174초, 10장, 369 객체 (193 텍스트 + 176 SHAPE), SAM 통합 + LaMa 인페인팅
 ```
 
-결과 파일: `output/sample2/sample2_edited.pptx` (사용자 시각 확인 완료, 텍스트 추출 정상)
+결과 파일: `output/sample2/sample2_edited.pptx`
+- 슬라이드 1, 4: 깨끗
+- 슬라이드 5: 게이지 그래픽 보존됨 (SAM SHAPE 보호 기여)
+- 슬라이드 2, 6: 제목 바 잔재 (SHAPE 보호 경계 케이스, 후속 튜닝 필요)
+- 슬라이드 3: 표 셀 잔재 (P1-T09 native 표 복원 별도 과제)
+
+`--no-sam`로 SAM 비활성 가능 (속도 우선 시).
 
 ## 핵심 결정 (사용자 답변 반영)
 
@@ -54,8 +59,8 @@ PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
 |---|---|---|
 | P1-T01 입력 검증 | ✅ | `star_slide/input/` |
 | P1-T02 래스터화 | ✅ | LibreOffice + 임베드 fallback, EMU↔px |
-| P1-T03 SAM Worker | ⏳ | 모듈 완성(`sam2_auto.py`), 파이프라인 미통합 |
-| P1-T04 객체 분류 | ⏳ | 후속 |
+| P1-T03 SAM Worker | ✅ | `sam2_auto.py` 파이프라인 통합, `--sam/--no-sam` |
+| P1-T04 객체 분류 | ✅ | `classify.py` TEXT/SHAPE/BACKGROUND/NOISE 분류 + 7 unit tests |
 | P1-T05 OCR Worker | ✅ | (Phase 0에서 완성) |
 | P1-T06 LaMa 인페인팅 | ✅ | 파이프라인 통합 완료, 잔재 거의 없음 |
 | P1-T07 폰트 매칭 | ⏳ | 후속 |
@@ -71,9 +76,10 @@ PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
 
 추천 우선순위 — PRD MVP exit criteria(편집 가능 비율 80%+) 빠르게 도달:
 
-1. **SAM 객체 분리 통합** (P1-T03/T04) — 도형/아이콘을 별도 객체로 분리
-2. **vtracer 통합** (P1-T08) — 도형/아이콘 → native PowerPoint shape (custGeom)
-3. **표 native 복원** (P1-T09 T2 레벨) — sample2_slide03 같은 표
+1. **vtracer 통합** (P1-T08) — SHAPE 객체 → native PowerPoint shape (custGeom).
+   현재 SHAPE 객체는 `editable_level=RASTER`로 보유만 됨. vtracer 트레이스 → svg2custgeom → inject로 NATIVE/VECTOR 승격하면 편집 가능 비율 80%+ 달성 가능.
+2. **표 native 복원** (P1-T09 T2 레벨) — sample2_slide03 같은 표. 셀 잔재 문제 해결 포함.
+3. **제목 바 잔재 튜닝** — SAM SHAPE 분류 임계값 조정 (slide 2, 6 제목 바 케이스)
 4. **Visual QA** (P1-T11) — SSIM 측정 + report.json 강화
 5. **회귀 테스트** (P1-T13) — pytest tests/e2e/ 골든 샘플
 
@@ -84,8 +90,8 @@ PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
 
 ## 코드베이스 현황
 
-- **Python 패키지**: 41 source files, mypy strict GREEN, ruff GREEN
-- **테스트**: 54 unit tests passing (smoke 4, iou 14, metrics 15, svg2custgeom 8, input 8, coords 3, rest 2)
+- **Python 패키지**: 42 source files, mypy strict GREEN, ruff GREEN
+- **테스트**: 61 unit tests passing (+7 classify)
 - **모듈**:
   - `star_slide/schema/` — Layer Schema (pydantic)
   - `star_slide/input/` — 검증 + PPTX 추출
@@ -123,6 +129,8 @@ vtracer 0.6.5 (cargo install, ~/.cargo/bin/vtracer)
 | 2026-04-25 | SAM 3 access 차단 | gated repo 미인지 | SAM 2.1 fallback 즉시 적용 (ADR-001 약속대로) | 모델 도입 전 access 정책 확인 |
 | 2026-04-25 | 인페인팅 첫 시도 잔재 | padding 6 + dilate 0 | padding 12 + dilate 7 + conf 0.3 마스크 임계 | 한글 폰트는 잔재 방지 위해 큰 padding 필요 |
 | 2026-04-25 | 인페인팅과 textbox 임계 동일 | 작은 영문 라벨 마스킹 누락 | inpaint_min_confidence(0.3) ≠ ocr_min_confidence(0.7) 분리 | 동일 데이터의 다른 용도 임계 분리 |
+| 2026-04-25 | SAM TEXT 마스크 직접 인페인팅 시 안티앨리어싱 가장자리 잔재 | 글자 외곽선이 SAM 마스크 + 3px dilate로 못 덮음 | 인페인팅은 OCR rect+padding 유지, SAM은 SHAPE 보호용으로만 사용 | 정밀 마스크 ≠ 인페인팅 적합. 인페인팅에는 *충분히 큰* 마스크 필요 |
+| 2026-04-25 | SHAPE 보호가 글자 획 잔재까지 보호 | OCR과 약간 겹치는 SAM 마스크가 SHAPE로 분류됨 | shape_overlap_with_ocr_max=0.05로 OCR 겹치는 SHAPE는 보호 제외 | 보호 마스크는 *명확히* 비텍스트인 것에만 적용 |
 
 ## 참조
 

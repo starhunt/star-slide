@@ -53,6 +53,11 @@ def run(
         "--inpaint/--no-inpaint",
         help="LaMa 인페인팅으로 텍스트 자리 배경 자연 복원 (기본 ON)",
     ),
+    use_sam: bool = typer.Option(
+        True,
+        "--sam/--no-sam",
+        help="SAM 객체 분리 + SAM 정밀 마스크 인페인팅 (기본 ON)",
+    ),
 ) -> None:
     """input → output 변환."""
     if not input_path.exists():
@@ -66,6 +71,7 @@ def run(
         use_libreoffice=not no_libreoffice,
         ocr_min_confidence=ocr_conf,
         inpaint=inpaint,
+        use_sam=use_sam,
     )
 
     t0 = time.perf_counter()

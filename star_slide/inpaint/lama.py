@@ -63,6 +63,85 @@ def _bboxes_to_mask(
     return Image.fromarray(mask, mode="L")
 
 
+def _segmentations_to_mask(
+    segmentations: list[NDArray[np.bool_]],
+    image_size: tuple[int, int],
+    dilate_kernel: int = 3,
+) -> Image.Image:
+    """SAM bool 마스크들의 union → 흰색 PIL 마스크.
+
+    SAM 마스크는 글자 모양을 정밀히 따라가므로 padding은 적게(0~3px) 적용.
+    인페인팅 보호를 위해 작은 dilate(3~5)로 안티앨리어싱 가장자리 흡수.
+    """
+    import cv2
+
+    w, h = image_size
+    union = np.zeros((h, w), dtype=np.uint8)
+    for seg in segmentations:
+        if seg.shape != (h, w):
+            # 크기 불일치는 무시 (SAM 출력은 입력 이미지 크기와 동일해야 함)
+            continue
+        union[seg] = 255
+
+    if dilate_kernel > 0:
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (dilate_kernel, dilate_kernel)
+        )
+        union = cv2.dilate(union, kernel, iterations=1).astype(np.uint8)
+
+    return Image.fromarray(union, mode="L")
+
+
+def _merge_masks(*masks: Image.Image) -> Image.Image:
+    """여러 PIL 마스크(L 모드)를 픽셀-OR로 병합."""
+    arrays = [np.asarray(m.convert("L"), dtype=np.uint8) for m in masks if m is not None]
+    if not arrays:
+        raise ValueError("merge_masks: empty input")
+    merged = arrays[0].copy()
+    for a in arrays[1:]:
+        if a.shape != merged.shape:
+            continue
+        merged = np.maximum(merged, a)
+    return Image.fromarray(merged, mode="L")
+
+
+def inpaint_with_mask(
+    image: Image.Image | Path,
+    mask: Image.Image,
+    *,
+    ssim_threshold: float = 0.3,
+) -> Image.Image:
+    """미리 만들어진 마스크로 LaMa 인페인팅.
+
+    bbox + padding 방식 대신 SAM 정밀 마스크를 직접 사용할 때 호출.
+    SSIM 임계 미달 시 원본 반환 (FR-041 fallback).
+    """
+    pil = image if isinstance(image, Image.Image) else Image.open(image)
+    pil = pil.convert("RGB")
+
+    # 빈 마스크면 원본 그대로
+    arr = np.asarray(mask.convert("L"))
+    if not arr.any():
+        return pil
+
+    lama = _get_lama()
+    inpainted = lama(pil, mask)
+    if not isinstance(inpainted, Image.Image):
+        inpainted = Image.fromarray(np.asarray(inpainted))
+
+    try:
+        orig_arr = np.asarray(pil.convert("L"))
+        new_arr = np.asarray(inpainted.convert("L"))
+        if orig_arr.shape == new_arr.shape:
+            score = ssim(orig_arr, new_arr, data_range=255)  # type: ignore[no-untyped-call]
+            if score < ssim_threshold:
+                inpainted = pil
+    except Exception:
+        pass
+
+    return inpainted
+
+
 def inpaint_background(
     image: Image.Image | Path,
     bboxes: list[Bbox],

@@ -23,15 +23,21 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+from numpy.typing import NDArray
 from PIL import Image
 from pptx import Presentation
 from pptx.util import Emu, Pt
 
-from star_slide.inpaint.lama import inpaint_background
+from star_slide.inpaint.lama import (
+    _bboxes_to_mask,
+    inpaint_background,
+    inpaint_with_mask,
+)
 from star_slide.input.pptx_extractor import inspect_pptx
 from star_slide.input.validator import validate
 from star_slide.ocr.metrics import cer
-from star_slide.ocr.paddleocr_worker import run_ocr
+from star_slide.ocr.paddleocr_worker import OcrLine, run_ocr
 from star_slide.rasterize.coords import CoordTransform
 from star_slide.rasterize.libreoffice import (
     LibreOfficeNotFoundError,
@@ -51,6 +57,12 @@ from star_slide.schema import (
     SourceAssets,
     TextPayload,
 )
+from star_slide.segmentation.classify import (
+    ClassificationResult,
+    MaskClass,
+    classify_masks,
+)
+from star_slide.segmentation.sam2_auto import Sam2Result, run_sam2_auto
 
 
 @dataclass(frozen=True)
@@ -64,6 +76,12 @@ class ConvertOptions:
     inpaint_dilate_px: int = 7
     inpaint_min_confidence: float = 0.3  # 마스크에 포함할 OCR 임계 (관대)
     vectorize_shapes: bool = False  # P1-T08 이후 활성화
+    use_sam: bool = True  # P1-T03/T04: SAM 객체 분리 + SAM 마스크 기반 인페인팅
+    sam_text_dilate_px: int = 3  # SAM TEXT 마스크용 dilate (정밀해서 작게)
+    sam_pred_iou_thresh: float = 0.86
+    sam_stability_thresh: float = 0.92
+    sam_points_per_side: int = 32
+    sam_max_masks: int = 200
 
 
 def convert(
@@ -167,19 +185,39 @@ def convert(
             ln for ln in ocr_lines if ln.confidence >= options.inpaint_min_confidence
         ]
 
-        # 인페인팅: 모든 OCR 검출 영역(관대한 임계)을 LaMa로 지움
+        # SAM 객체 분리 (옵션). 실패해도 인페인팅은 계속 (OCR bbox fallback).
+        sam_result: Sam2Result | None = None
+        classification: ClassificationResult | None = None
+        if options.use_sam:
+            try:
+                sam_result = run_sam2_auto(
+                    png_path,
+                    pred_iou_thresh=options.sam_pred_iou_thresh,
+                    stability_score_thresh=options.sam_stability_thresh,
+                    points_per_side=options.sam_points_per_side,
+                    max_masks=options.sam_max_masks,
+                )
+                classification = classify_masks(
+                    sam_result.masks,
+                    mask_lines,
+                    image_size=(im_w, im_h),
+                )
+            except Exception as exc:
+                qa_warnings.append(f"slide {idx} SAM 실패 (OCR bbox fallback): {exc}")
+                sam_result = None
+                classification = None
+
+        # 인페인팅: SAM TEXT 마스크 우선 + (SAM이 못 잡은) OCR fallback
         background_path = png_path
         if options.inpaint and mask_lines:
             try:
-                bboxes_for_mask = [ln.bbox for ln in mask_lines]
-                inpainted = inpaint_background(
-                    png_path,
-                    bboxes_for_mask,
-                    padding=options.inpaint_padding_px,
-                    dilate_kernel=options.inpaint_dilate_px,
+                inpainted = _inpaint_slide(
+                    png_path=png_path,
+                    image_size=(im_w, im_h),
+                    mask_lines=mask_lines,
+                    classification=classification,
+                    options=options,
                 )
-                if isinstance(inpainted, tuple):
-                    inpainted = inpainted[0]
                 inpaint_dir = workdir / "inpainted"
                 inpaint_dir.mkdir(parents=True, exist_ok=True)
                 background_path = inpaint_dir / png_path.name
@@ -218,6 +256,26 @@ def convert(
                 ),
             )
             slide.objects.append(obj)
+
+        # SAM SHAPE 후보를 Layer Schema에 기록 (P1-T08 vtracer 입력)
+        if classification is not None:
+            shape_offset = len(slide.objects)
+            for j, cm in enumerate(classification.classified):
+                if cm.cls != MaskClass.SHAPE:
+                    continue
+                bbox_px = cm.mask.bbox
+                bbox_emu = coord.px_bbox_to_emu(bbox_px)
+                shape_obj = Object(
+                    id=f"{slide.id}_shape_{shape_offset + j:03d}",
+                    type=ObjectType.SHAPE,
+                    bbox_px=bbox_px,
+                    bbox_emu=bbox_emu,
+                    confidence=cm.mask.score,
+                    editable_level=EditableLevel.RASTER,  # P1-T08에서 VECTOR로 승격 예정
+                    source=SourceAssets(detector="sam2.1_hiera_large"),
+                    qa=Qa(),
+                )
+                slide.objects.append(shape_obj)
 
         project.slides.append(slide)
 
@@ -307,6 +365,81 @@ def _compose_pptx(project: Project, output_path: Path) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))
+
+
+def _inpaint_slide(
+    *,
+    png_path: Path,
+    image_size: tuple[int, int],
+    mask_lines: list[OcrLine],
+    classification: ClassificationResult | None,
+    options: ConvertOptions,
+) -> Image.Image:
+    """슬라이드 1장 인페인팅.
+
+    전략:
+      - 인페인팅 영역은 OCR 사각 bbox + padding (이미 잘 작동, proven).
+      - SAM의 가치는 *도형 보호*: SHAPE 마스크 영역은 인페인팅 대상에서 제외.
+        → 게이지/아이콘이 OCR bbox와 겹쳐도 지워지지 않음.
+      - SAM TEXT 마스크는 안티앨리어싱 가장자리가 남는 문제로 인페인팅에 직접 쓰지 않음.
+    """
+    bboxes = [ln.bbox for ln in mask_lines]
+    if classification is None:
+        # SAM 미사용 → 기존 경로
+        result = inpaint_background(
+            png_path,
+            bboxes,
+            padding=options.inpaint_padding_px,
+            dilate_kernel=options.inpaint_dilate_px,
+        )
+        if isinstance(result, tuple):
+            result = result[0]
+        return result
+
+    pil = Image.open(png_path).convert("RGB")
+
+    # 1. OCR 기반 인페인팅 마스크 (기존 방식, 잘 작동)
+    ocr_mask_pil = _bboxes_to_mask(
+        bboxes,
+        image_size=image_size,
+        padding=options.inpaint_padding_px,
+        dilate_kernel=options.inpaint_dilate_px,
+    )
+    ocr_mask_arr = np.asarray(ocr_mask_pil.convert("L"), dtype=np.uint8)
+
+    # 2. SHAPE 보호 마스크: SAM이 "도형"으로 분류한 픽셀 중,
+    #    OCR과 (실질적으로) 겹치지 않는 것만 보호한다.
+    #    → 게이지/아이콘은 살리지만, OCR bbox 내부의 글자 획 잔재는 보호 X.
+    shape_segs: list[NDArray[np.bool_]] = []
+    w, h = image_size
+    slide_area = float(w * h) if w > 0 and h > 0 else 1.0
+    shape_max_area_ratio = 0.15
+    shape_overlap_with_ocr_max = 0.05  # OCR과의 픽셀 겹침이 5% 이상이면 텍스트 잔재로 의심 → 보호 X
+
+    for c in classification.classified:
+        if c.cls != MaskClass.SHAPE:
+            continue
+        if c.mask.area / slide_area > shape_max_area_ratio:
+            continue
+        seg = c.mask.segmentation
+        if seg.shape != (h, w):
+            continue
+        overlap = int(np.logical_and(seg, ocr_mask_arr > 0).sum())
+        if c.mask.area > 0 and overlap / c.mask.area > shape_overlap_with_ocr_max:
+            continue
+        shape_segs.append(seg)
+
+    if shape_segs:
+        shape_arr = np.zeros((h, w), dtype=np.uint8)
+        for seg in shape_segs:
+            shape_arr[seg] = 255
+        final_arr = ocr_mask_arr.copy()
+        final_arr[shape_arr > 0] = 0
+    else:
+        final_arr = ocr_mask_arr
+
+    final_mask = Image.fromarray(final_arr.astype(np.uint8), mode="L")
+    return inpaint_with_mask(pil, final_mask)
 
 
 def quick_self_check_cer(predicted: str, ground_truth: str) -> float:
