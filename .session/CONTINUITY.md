@@ -1,34 +1,36 @@
 # Star-Slide Session Continuity
 
 > 매 세션 종료 전 갱신. 새 세션 시작 시 가장 먼저 읽기.
+> 마지막 갱신: 2026-04-25 (Phase 1 P1-T06 완료 시점)
 
 ---
 
-## 현재 상태 (2026-04-25)
+## 현재 상태
 
-- **Phase**: Phase 0 (Spike) — Day 1
-- **진행 태스크**: P0-T02 샘플셋 수집 — 27/100장 + 라벨 골격 (in progress, 라벨 작성 대기)
-- **블로커**: 추가 73장 출처 결정 + 27장 라벨링 누가 할지 결정
+- **Phase**: Phase 1 (Vertical Slice MVP)
+- **GitHub**: https://github.com/starhunt/star-slide (private), main 브랜치, 11 커밋
+- **마지막 커밋**: `2227860 feat(inpaint): integrate LaMa text removal into pipeline`
+- **블로커**: 없음 (계속 진행 가능)
 
-## 완료된 작업
+## End-to-End 작동 검증
 
-- ✅ 3개 원본 PRD(Codex/Claude/Manus) 검토 + 통합 PRD 작성
-- ✅ 최신 기술 검증 리서치 (researcher 에이전트, 2026-04-25)
-- ✅ ADR 14건 작성 (`docs/Star-Slide_TechDecisions.md`)
-- ✅ 상세 개발계획 6개월 분 작성 (`docs/Star-Slide_DevPlan.md`)
-- ✅ 프로젝트 구조 가이드 (`docs/Star-Slide_Structure.md`)
-- ✅ P0-T01: git init, 디렉토리, pyproject.toml, pre-commit, CI 골격 + 첫 커밋 `179d976`
-- ✅ refdata 분석: sample1.pptx(17장) + sample2.pptx(10장) 모두 100% 이미지-잠금 확인 (PRD §2 가정 실증)
-- ✅ 27장 슬라이드 이미지 추출 → `data/samples/notebooklm/`
-- ✅ 27장 라벨 골격 JSON 생성 → `data/labels/notebooklm/`
-- ✅ 라벨링 가이드 작성 → `data/labels/notebooklm/LABELING_GUIDE.md`
+```bash
+PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
+  uv run star-slide convert run refdata/sample2.pptx \
+  -o output/sample2/sample2_edited.pptx \
+  --no-libreoffice
+# → 105초, 10장, 193 textbox, 100% editable, LaMa 인페인팅 적용됨
+```
 
-## 핵심 결정 (사용자 답변)
+결과 파일: `output/sample2/sample2_edited.pptx` (사용자 시각 확인 완료, 텍스트 추출 정상)
+
+## 핵심 결정 (사용자 답변 반영)
 
 - **MVP 범위**: 텍스트 + 단순도형/아이콘 + 표(T1-T2) + 인페인팅
 - **외부 API**: OSS-first, 유료 API는 옵션 (기본 OFF)
 - **인터페이스**: CLI/API 우선, 웹은 Phase 3
 - **타깃**: 개인 PM/기획자 (NotebookLM/Gamma 사용자)
+- **출력 디렉토리**: `output/<project>/` 규약 (`.gitignore`로 산출물 비추적)
 
 ## 리서치 정정 사항 (반영 완료)
 
@@ -36,70 +38,114 @@
 2. gpt-image-2 한국어 정확도 95% (Manus PRD 99% 주장은 마케팅 수치)
 3. ChartGemma 라이선스 위험 → DePlot 채택
 4. python-pptx custGeom 직접 임포트 미지원 → 자체 변환기 필수
+5. **SAM 3는 gated repo** (`facebook/sam3`) → SAM 2.1 hiera-large fallback (ADR-001 fallback 경로)
 
-## 다음 단계 (Phase 0 → Phase 1)
+## Phase 0 (Spike) 결과 — 모두 GO
 
-1. **사용자 PowerPoint H2 시각 검증** (1회):
-   `open experiments/h2_custgeom/results/h2_shapes.pptx` → 도형 우클릭 "점 편집"
-2. **사용자 SAM 3 HuggingFace access 요청** (선택):
-   https://huggingface.co/facebook/sam3 → access 획득 시 sam3.py로 교체
-3. **Phase 0 Exit Gate 검토** + **Phase 1 진입 결정**
-4. (선택) GT 라벨 보강 → H1/H3 정밀 재측정
+| 가설 | 결과 | 핵심 수치 | 보고서 |
+|---|---|---|---|
+| H1 SAM 객체 분리 | ✅ GO (SAM 2.1) | recall@contain 0.719, 4.9s/slide MPS | `experiments/h1_sam31/REPORT.md` |
+| H2 custGeom 변환 | ✅ GO | 13/13 변환+주입, PowerPoint 호환 | `experiments/h2_custgeom/REPORT.md` |
+| H3 PaddleOCR Korean | ✅ GO with caveat | slide5 CER 0.026, slide7 0.067 | `experiments/h3_ocr/REPORT.md` |
 
-## 관찰 사항 (Phase 0 데이터셋 분석)
+## Phase 1 (Vertical Slice MVP) 진행 상황
 
-- **이미지 다운샘플**: NotebookLM 임베드 이미지 1376x768 (슬라이드 EMU 좌표 1707x960px @ 96DPI 대비 ~80%) → P1-T02 래스터화는 LibreOffice 슬라이드 합성 우선이 임베드 이미지 추출보다 정확
-- **NotebookLM 워터마크**: 모든 슬라이드 우측 하단 고정 → background_decoration 사전 분류 정책 확정 (label 골격에 반영됨)
-- **샘플 범주 다양성** (27장 관찰):
-  - 표지(타이틀+서브+일러스트): sample1_slide01, sample2_slide01
-  - 비교 다이어그램(Early/Late): sample1_slide02
-  - 프로세스 흐름도(swim lane + 4단계): sample1_slide05
-  - 카드형 비교(3열 메트릭+도넛): sample2_slide05
-- **표 1장 발견** (정정): sample2_slide03 = Pro vs Flash 매트릭스(5행x3열) → MVP 표 복원 검증에 직접 사용 가능
-- **H1 priority 10장 선정 완료**: 4가지 패턴(title/comparison/process/diagram/infographic) + 표 1 + 인포그래픽 1
-  - 추적 파일: `data/labels/notebooklm/H1_PRIORITY_TRACKING.md`
-- **H1 priority 10장 ground_truth_text 입력 완료** (2026-04-25, claude-vision)
-  - 평균 217자/슬라이드, 총 2,082자
-  - 큰 텍스트 정확, 작은 텍스트는 1376x768 해상도에서 보이는 만큼
-  - 사용자 검수는 H3 측정 전 권장 (필수는 아님)
-- ✅ **H3 PaddleOCR CER 측정 완료** — GO with caveat
-  - slide5: CER 0.026, slide7: CER 0.067 (둘 다 H3 GREEN)
-  - 평균 0.648은 GT에 일러스트 안 영문 텍스트 누락 때문
-  - PaddleOCR 한국어 OCR 자체는 양호 → ADR-002 그대로 채택
-- ✅ **H2 svg→custGeom 변환기 완성** — GO
-  - 13종 도형(simple 10 + cubic 3) 모두 변환+주입 성공
-  - 41 단위 테스트 통과 (svg2custgeom 8개 추가)
-  - PowerPoint 시각 검증만 사용자 1회 필요
-- ✅ **H1 SAM 슬라이드 객체 분리** — GO (SAM 2.1 fallback)
-  - SAM 3는 gated repo → SAM 2.1 hiera-large + transformers mask-generation pipeline 사용
-  - Mac MPS 4.9s/슬라이드, 491 마스크 / 10 슬라이드
-  - text recall@contain≥0.7 = 0.719 (4 슬라이드 100%, 일부 process 카테고리 0%)
-  - 시각 검수: table/title/comparison 양호, process는 큰 frame 마스크 효과
-  - Phase 1에서 SAM 3 access 요청 + 마스크 면적 필터 적용 권장
+| Task | 상태 | 비고 |
+|---|---|---|
+| P1-T01 입력 검증 | ✅ | `star_slide/input/` |
+| P1-T02 래스터화 | ✅ | LibreOffice + 임베드 fallback, EMU↔px |
+| P1-T03 SAM Worker | ⏳ | 모듈 완성(`sam2_auto.py`), 파이프라인 미통합 |
+| P1-T04 객체 분류 | ⏳ | 후속 |
+| P1-T05 OCR Worker | ✅ | (Phase 0에서 완성) |
+| P1-T06 LaMa 인페인팅 | ✅ | 파이프라인 통합 완료, 잔재 거의 없음 |
+| P1-T07 폰트 매칭 | ⏳ | 후속 |
+| P1-T08 vtracer/custGeom | ✅ | (Phase 0 H2에서 완성) — 파이프라인 미통합 |
+| P1-T09 표 복원 | ⏳ | 후속 |
+| P1-T10 Composer | ✅ | 텍스트박스 + 배경 PNG 합성 |
+| P1-T11 Visual QA | ⏳ | 후속 |
+| P1-T12 CLI convert | ✅ | `star-slide convert run` 동작 |
+| P1-T13 통합 테스트 | ⏳ | 후속 |
+| P1-T14 Exit Gate | ⏳ | 후속 |
 
-## Phase 0 가설 검증 일정
+## 다음 단계 (즉시)
 
-- Day 1 (오늘): P0-T01 스켈레톤
-- Day 2-3: P0-T02 샘플셋 + 라벨링
-- Day 4-5: P0-T03 H1 SAM 3.1 IoU 검증
-- Week 2: P0-T04 H2 custGeom + P0-T05 H3 OCR + Phase 0 Exit Gate
+추천 우선순위 — PRD MVP exit criteria(편집 가능 비율 80%+) 빠르게 도달:
+
+1. **SAM 객체 분리 통합** (P1-T03/T04) — 도형/아이콘을 별도 객체로 분리
+2. **vtracer 통합** (P1-T08) — 도형/아이콘 → native PowerPoint shape (custGeom)
+3. **표 native 복원** (P1-T09 T2 레벨) — sample2_slide03 같은 표
+4. **Visual QA** (P1-T11) — SSIM 측정 + report.json 강화
+5. **회귀 테스트** (P1-T13) — pytest tests/e2e/ 골든 샘플
+
+후속 후보:
+- 한글 폰트 매칭 (P1-T07, pgvector 임베딩)
+- LibreOffice 설치 후 슬라이드 마스터 합성 정확도 검증
+- SAM 3 access 획득 시 sam2_auto → sam3 교체 (PCS 패러다임)
+
+## 코드베이스 현황
+
+- **Python 패키지**: 41 source files, mypy strict GREEN, ruff GREEN
+- **테스트**: 54 unit tests passing (smoke 4, iou 14, metrics 15, svg2custgeom 8, input 8, coords 3, rest 2)
+- **모듈**:
+  - `star_slide/schema/` — Layer Schema (pydantic)
+  - `star_slide/input/` — 검증 + PPTX 추출
+  - `star_slide/rasterize/` — 좌표 변환 + LibreOffice/fallback
+  - `star_slide/segmentation/` — IoU + SAM 2.1 + SAM 3 stub
+  - `star_slide/ocr/` — PaddleOCR + 메트릭
+  - `star_slide/inpaint/` — LaMa wrapper
+  - `star_slide/composer/` — svg2custgeom + inject
+  - `star_slide/pipeline/orchestrator.py` — convert() end-to-end
+  - `star_slide/cli/` — convert + label + main
+
+## 외부 의존성 (설치됨)
+
+```
+torch 2.11.0 (MPS), transformers 5.5.4, paddleocr 3.4.1, paddlepaddle 3.3.1
+simple-lama-inpainting 0.1.2 (big-lama 가중치 자동 다운로드 ~196MB)
+opencv-python 4.11, pillow 9.5
+python-pptx 1.0.2, pdf2image 1.17, pydantic 2.6+
+vtracer 0.6.5 (cargo install, ~/.cargo/bin/vtracer)
+```
 
 ## 사용자 결정 대기 중
 
-- [ ] GPU 환경: A100 80GB 1대 vs RTX 4090 (개발용) 혹은 MacBook M4 Max(MPS)
-- [ ] 무료 한글 폰트 풀 30종 리스트 확정 (Phase 0 끝)
-- [ ] SAM License 원문 재배포/임계치 조항 확인 (변호사 자문 필요?)
+- [ ] LibreOffice 설치 여부 (현재 `--no-libreoffice` fallback 사용)
+- [ ] SAM 3 HuggingFace access 요청 (선택)
+- [ ] PowerPoint H2 시각 검증 (1회): 13 도형 점 편집 메뉴 확인
+- [ ] sample2_edited.pptx 직접 검증 (텍스트 편집 가능 여부)
 
 ## Mistakes & Learnings
 
 | 시점 | 실수/관찰 | 원인 | 해결책 | 재발 방지 |
 |---|---|---|---|---|
-| 2026-04-25 | Manus PRD가 vtracer를 GPL-3.0으로 기재 | LICENSE 미확인 | researcher 에이전트로 LICENSE 직접 확인 → MIT 확정 | 외부 의존성 도입 전 LICENSE 파일 직접 검증 (CLAUDE.md 외부 라이브러리 규칙 적용) |
-| 2026-04-25 | Manus PRD의 99% glyph accuracy 주장 | 마케팅 수치 인용 | 독립 학술 벤치마크 부재 명시, 95% 보수치 사용 | 정확도 주장은 반드시 출처 신뢰도 등급(HIGH/MED/LOW) 표기 |
+| 2026-04-25 | Manus PRD가 vtracer를 GPL-3.0으로 기재 | LICENSE 미확인 | researcher로 LICENSE 직접 확인 → MIT | 외부 의존성 도입 전 LICENSE 직접 검증 |
+| 2026-04-25 | Manus PRD 99% glyph accuracy 주장 | 마케팅 수치 인용 | 95% 보수치 사용, 출처 신뢰도 등급 표기 | 정확도 주장은 HIGH/MED/LOW 라벨 |
+| 2026-04-25 | SAM 3 access 차단 | gated repo 미인지 | SAM 2.1 fallback 즉시 적용 (ADR-001 약속대로) | 모델 도입 전 access 정책 확인 |
+| 2026-04-25 | 인페인팅 첫 시도 잔재 | padding 6 + dilate 0 | padding 12 + dilate 7 + conf 0.3 마스크 임계 | 한글 폰트는 잔재 방지 위해 큰 padding 필요 |
+| 2026-04-25 | 인페인팅과 textbox 임계 동일 | 작은 영문 라벨 마스킹 누락 | inpaint_min_confidence(0.3) ≠ ocr_min_confidence(0.7) 분리 | 동일 데이터의 다른 용도 임계 분리 |
 
 ## 참조
 
 - 통합 PRD: `docs/Star-Slide_PRD.md`
-- ADR: `docs/Star-Slide_TechDecisions.md`
+- ADR (14건): `docs/Star-Slide_TechDecisions.md`
 - 개발계획: `docs/Star-Slide_DevPlan.md`
-- 구조: `docs/Star-Slide_Structure.md`
+- 프로젝트 구조: `docs/Star-Slide_Structure.md`
+- 출력 규약: `output/README.md`
+- 라벨링 가이드: `data/labels/notebooklm/H1_PRIORITY_TRACKING.md`
+
+## 새 세션 시작 시 진행 명령
+
+```bash
+# 1. 컨텍스트 확인
+cat .session/CONTINUITY.md
+
+# 2. 코드베이스 상태 확인
+git log --oneline | head -15
+uv run pytest tests/ 2>&1 | tail -3
+
+# 3. 최신 변환 결과 확인
+ls -la output/sample2/
+
+# 4. 다음 작업 진입 — SAM 객체 분리 통합 (추천 1순위)
+# star_slide/segmentation/sam2_auto.py를 pipeline/orchestrator.py에 통합
+```
