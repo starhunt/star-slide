@@ -33,6 +33,7 @@ class NotebookLmAutoOptions:
     use_sam3: bool = True
     hybrid_allowed_delta: float = 0.0
     min_objects: int = 3
+    llm_parallel: int = 5
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,8 @@ def generate_layouts(
         "--continue-on-error",
         "--retries",
         str(options.retries),
+        "--parallel",
+        str(options.llm_parallel),
     ]
     if options.api_key:
         cmd.extend(["--api-key", options.api_key])
@@ -162,6 +165,8 @@ def detect_groups(
         str(options.timeout_sec),
         "--nonce",
         nonce,
+        "--parallel",
+        str(options.llm_parallel),
     ]
     if options.api_key:
         cmd.extend(["--api-key", options.api_key])

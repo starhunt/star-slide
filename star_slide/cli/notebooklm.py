@@ -25,6 +25,12 @@ def run(
     api_key: str = typer.Option("", "--api-key"),
     timeout: float = typer.Option(600.0, "--timeout"),
     retries: int = typer.Option(1, "--retries"),
+    llm_parallel: int = typer.Option(
+        5,
+        "--llm-parallel",
+        min=1,
+        help="layout/raster group LLM 호출 병렬 수",
+    ),
     sam3: bool = typer.Option(True, "--sam3/--no-sam3"),
     hybrid_allowed_delta: float = typer.Option(
         0.0,
@@ -40,6 +46,7 @@ def run(
         api_key=api_key,
         timeout_sec=timeout,
         retries=retries,
+        llm_parallel=llm_parallel,
         use_sam3=sam3,
         hybrid_allowed_delta=hybrid_allowed_delta,
     )

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import subprocess
 import sys
@@ -23,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-buster", default="")
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--retries", type=int, default=0)
+    parser.add_argument("--parallel", type=int, default=5)
     parser.add_argument("--qa-pptx", type=Path)
     parser.add_argument("--qa-render-dir", type=Path)
     return parser.parse_args()
@@ -34,51 +36,67 @@ def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
 
 
+def layout_cmd(args: argparse.Namespace, image: Path, output: Path, attempt: int) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).with_name("generate_layout_json.py")),
+        "--image",
+        str(image),
+        "-o",
+        str(output),
+        "--base-url",
+        args.base_url,
+        "--model",
+        args.model,
+        "--timeout",
+        str(args.timeout),
+        "--min-objects",
+        str(args.min_objects),
+    ]
+    if args.api_key:
+        cmd.extend(["--api-key", args.api_key])
+    if args.cache_buster:
+        cmd.extend(["--cache-buster", f"{args.cache_buster}-{image.stem}-try{attempt + 1}"])
+    if args.allow_images:
+        cmd.append("--allow-images")
+    return cmd
+
+
+def process_image(args: argparse.Namespace, image: Path) -> tuple[Path, str]:
+    output = args.out_dir / f"{image.stem}.layout.json"
+    last_error = ""
+    for attempt in range(args.retries + 1):
+        try:
+            run(layout_cmd(args, image, output, attempt))
+            return output, ""
+        except subprocess.CalledProcessError as exc:
+            last_error = str(exc)
+            if attempt < args.retries:
+                print(f"retrying {image} after failure ({attempt + 1}/{args.retries})", flush=True)
+    return output, last_error
+
+
 def main() -> int:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     layouts: list[Path] = []
     failures: list[dict[str, str]] = []
-    for image in args.images:
-        output = args.out_dir / f"{image.stem}.layout.json"
-        last_error = ""
-        for attempt in range(args.retries + 1):
-            cmd = [
-                sys.executable,
-                str(Path(__file__).with_name("generate_layout_json.py")),
-                "--image",
-                str(image),
-                "-o",
-                str(output),
-                "--base-url",
-                args.base_url,
-                "--model",
-                args.model,
-                "--timeout",
-                str(args.timeout),
-                "--min-objects",
-                str(args.min_objects),
-            ]
-            if args.api_key:
-                cmd.extend(["--api-key", args.api_key])
-            if args.cache_buster:
-                cmd.extend(["--cache-buster", f"{args.cache_buster}-{image.stem}-try{attempt + 1}"])
-            if args.allow_images:
-                cmd.append("--allow-images")
-            try:
-                run(cmd)
+    max_workers = max(1, int(args.parallel))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(process_image, args, image): image for image in args.images}
+        for future in concurrent.futures.as_completed(future_map):
+            image = future_map[future]
+            output, error = future.result()
+            if error:
+                failures.append({"image": str(image), "error": error})
+            else:
                 layouts.append(output)
-                last_error = ""
-                break
-            except subprocess.CalledProcessError as exc:
-                last_error = str(exc)
-                if attempt < args.retries:
-                    print(f"retrying {image} after failure ({attempt + 1}/{args.retries})", flush=True)
-        if last_error:
-            failures.append({"image": str(image), "error": last_error})
-            if not args.continue_on_error:
-                raise subprocess.CalledProcessError(1, ["generate_layout_batch", str(image)])
+
+    layouts = sorted(layouts)
+    failures = sorted(failures, key=lambda item: item["image"])
+    if failures and not args.continue_on_error:
+        raise subprocess.CalledProcessError(1, ["generate_layout_batch", failures[0]["image"]])
 
     if failures:
         failure_path = args.out_dir / "failures.json"

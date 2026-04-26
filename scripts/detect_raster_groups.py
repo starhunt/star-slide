@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import json
 import mimetypes
 import os
@@ -58,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default="")
     parser.add_argument("--timeout", type=float, default=240.0)
     parser.add_argument("--nonce", default="")
+    parser.add_argument("--parallel", type=int, default=5)
     return parser.parse_args()
 
 
@@ -154,22 +156,34 @@ def export_crops(image_path: Path, groups: list[dict[str, Any]], out_dir: Path) 
         crop.save(out_dir / f"{image_path.stem}_raster_group_{idx:02d}.png")
 
 
+def process_image(args: argparse.Namespace, image: Path, key: str) -> dict[str, Any]:
+    result = call_model(args, image, key)
+    groups = result.get("raster_groups", [])
+    if not isinstance(groups, list):
+        groups = []
+    draw_overlay(image, groups, args.out_dir / f"{image.stem}_raster_groups_overlay.png")
+    export_crops(image, groups, args.out_dir)
+    out_json = args.out_dir / f"{image.stem}_raster_groups.json"
+    out_json.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(out_json, flush=True)
+    return result
+
+
 def main() -> int:
     args = parse_args()
     key = api_key(args.api_key)
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    reports = []
-    for image in args.images:
-        result = call_model(args, image, key)
-        groups = result.get("raster_groups", [])
-        if not isinstance(groups, list):
-            groups = []
-        draw_overlay(image, groups, args.out_dir / f"{image.stem}_raster_groups_overlay.png")
-        export_crops(image, groups, args.out_dir)
-        out_json = args.out_dir / f"{image.stem}_raster_groups.json"
-        out_json.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        reports.append(result)
-        print(out_json)
+    reports_by_image: dict[str, dict[str, Any]] = {}
+    max_workers = max(1, int(args.parallel))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(process_image, args, image, key): image for image in args.images
+        }
+        for future in concurrent.futures.as_completed(future_map):
+            image = future_map[future]
+            reports_by_image[image.name] = future.result()
+
+    reports = [reports_by_image[image.name] for image in args.images]
     (args.out_dir / "raster_groups_report.json").write_text(
         json.dumps(reports, ensure_ascii=False, indent=2),
         encoding="utf-8",
