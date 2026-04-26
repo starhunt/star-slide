@@ -149,15 +149,13 @@ output/.../work/qa_selected/qa_report.json
 CLI와 같은 변환 파이프라인을 웹에서 사용할 수 있습니다. 현재 웹앱은 로컬 MVP이며, 업로드한 파일과 산출물은 `output/web_jobs/` 아래에 저장됩니다.
 
 ```bash
-uv run --extra api star-slide web run \
-  --host 127.0.0.1 \
-  --port 8787
+uv run --extra api star-slide web run --host 127.0.0.1
 ```
 
-브라우저에서 다음 주소를 엽니다.
+웹앱은 항상 포트 `5400`에서 실행됩니다 (고정). 브라우저에서 다음 주소를 엽니다.
 
 ```text
-http://127.0.0.1:8787
+http://127.0.0.1:5400
 ```
 
 웹앱에서 가능한 작업:

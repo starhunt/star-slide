@@ -149,15 +149,13 @@ output/.../work/qa_selected/qa_report.json
 The web app runs the same conversion pipeline as the CLI. It is currently a local MVP. Uploaded files and outputs are stored under `output/web_jobs/`.
 
 ```bash
-uv run --extra api star-slide web run \
-  --host 127.0.0.1 \
-  --port 8787
+uv run --extra api star-slide web run --host 127.0.0.1
 ```
 
-Open:
+The web app always runs on port `5400` (fixed). Open:
 
 ```text
-http://127.0.0.1:8787
+http://127.0.0.1:5400
 ```
 
 Web app features:

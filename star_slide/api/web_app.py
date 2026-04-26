@@ -108,8 +108,15 @@ def create_app() -> FastAPI:
                     "id": "gemini",
                     "label": "Gemini",
                     "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
-                    "model": "gemini-2.5-flash",
+                    "model": "gemini-3.1-pro-preview",
                     "hint": "Gemini OpenAI-compatible endpoint 또는 로컬 프록시 모델명 사용",
+                },
+                {
+                    "id": "ollama",
+                    "label": "Ollama",
+                    "baseUrl": "http://localhost:11434/v1",
+                    "model": "llama3.2",
+                    "hint": "로컬 Ollama. Base URL에 /v1 prefix 필수. API key는 비워두세요.",
                 },
                 {
                     "id": "custom",
@@ -130,6 +137,30 @@ def create_app() -> FastAPI:
                 "editableEmbeddedText": True,
             },
         }
+
+    @app.post("/api/test-llm")
+    async def test_llm(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="요청 본문이 JSON 형식이어야 합니다.") from exc
+        result = await asyncio.to_thread(probe_llm_endpoint, payload)
+        return JSONResponse(result)
+
+    @app.post("/api/list-models")
+    async def list_models_endpoint(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="요청 본문이 JSON 형식이어야 합니다.") from exc
+        base_url = str(payload.get("baseUrl") or "").strip().rstrip("/")
+        api_key = str(payload.get("apiKey") or "").strip()
+        timeout = float(payload.get("timeout") or 10)
+        timeout = max(2.0, min(30.0, timeout))
+        if not base_url:
+            return JSONResponse({"models": [], "error": "Base URL이 없습니다."}, status_code=400)
+        models = await asyncio.to_thread(_list_models, base_url, api_key, timeout)
+        return JSONResponse({"models": models})
 
     @app.get("/api/system-check")
     def system_check() -> dict[str, Any]:
@@ -644,6 +675,166 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
         update_job(job_id, status="failed", phase="실패", error=sanitize_error(str(exc)), progress=100)
 
 
+def probe_llm_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
+    """Issue a tiny chat completion to verify the OpenAI-compatible endpoint.
+
+    Empty apiKey is allowed (Ollama/local proxies). On 404 with a base URL
+    that does not end with /v1, retries once with /v1 appended and reports
+    the auto-correction in the result note.
+    """
+    base_url = str(payload.get("baseUrl") or "").strip().rstrip("/")
+    model = str(payload.get("model") or "").strip()
+    api_key = str(payload.get("apiKey") or "").strip()
+    timeout = float(payload.get("timeout") or 15)
+    timeout = max(3.0, min(60.0, timeout))
+
+    if not base_url:
+        return {"ok": False, "error": "Base URL을 입력하세요."}
+    if not model:
+        return {"ok": False, "error": "Model 이름을 입력하세요."}
+
+    first = _probe_chat_completions(base_url, model, api_key, timeout)
+    if first.get("ok"):
+        return first
+    if first.get("status_code") == 404 and not base_url.endswith("/v1"):
+        retry_base = f"{base_url}/v1"
+        retry = _probe_chat_completions(retry_base, model, api_key, timeout)
+        if retry.get("ok"):
+            retry["note"] = (
+                f"Base URL에 '/v1'이 빠져있어 자동 보정했습니다. "
+                f"Base URL을 '{retry_base}'로 갱신하는 것을 권장합니다."
+            )
+            return retry
+        first = dict(first)
+        first["error"] = (
+            f"{first.get('error', '')} · Base URL이 /v1으로 끝나야 할 수 있습니다 "
+            f"(예: {base_url}/v1)"
+        )
+        if _looks_like_model_missing(retry):
+            first["available_models"] = _list_models(retry_base, api_key, timeout)
+            first["error"] += " · 모델명이 잘못된 것 같습니다. 사용 가능한 모델은 아래 참고."
+        return first
+    if _looks_like_model_missing(first):
+        first = dict(first)
+        first["available_models"] = _list_models(base_url, api_key, timeout)
+        suffix = " · `ollama pull <model>`로 모델을 다운로드하거나 사용 가능한 모델 중에서 선택하세요."
+        first["error"] = f"{first.get('error', '')}{suffix}"
+    return first
+
+
+def _looks_like_model_missing(result: dict[str, Any]) -> bool:
+    if result.get("ok"):
+        return False
+    error_text = str(result.get("error", "")).lower()
+    return "not found" in error_text or "does not exist" in error_text or "no such model" in error_text
+
+
+def _list_models(base_url: str, api_key: str, timeout: float) -> list[str]:
+    import httpx
+
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        with httpx.Client(timeout=min(timeout, 8.0), follow_redirects=True) as client:
+            response = client.get(f"{base_url}/models", headers=headers)
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+    items: list[str] = []
+    candidates = data.get("data") if isinstance(data, dict) else None
+    if isinstance(candidates, list):
+        for entry in candidates:
+            if isinstance(entry, dict):
+                value = entry.get("id") or entry.get("name")
+                if isinstance(value, str) and value:
+                    items.append(value)
+    return items[:12]
+
+
+def _probe_chat_completions(
+    base_url: str,
+    model: str,
+    api_key: str,
+    timeout: float,
+) -> dict[str, Any]:
+    import httpx
+
+    url = f"{base_url}/chat/completions"
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with the single word: ok"}],
+        "max_tokens": 5,
+        "temperature": 0,
+    }
+
+    started = time.perf_counter()
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.post(url, json=body, headers=headers)
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "error": f"{timeout:.0f}초 안에 응답이 없습니다.",
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
+    except httpx.HTTPError as exc:
+        return {
+            "ok": False,
+            "error": f"네트워크 오류: {sanitize_error(str(exc))}",
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    if response.status_code >= 400:
+        snippet = response.text[:300]
+        hint = ""
+        if response.status_code in (401, 403):
+            hint = " (API key 또는 권한을 확인하세요)"
+        elif response.status_code == 404:
+            hint = " (Base URL 또는 모델명을 확인하세요)"
+        elif response.status_code == 429:
+            hint = " (rate limit 초과 또는 quota 부족)"
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "latency_ms": latency_ms,
+            "error": f"HTTP {response.status_code}{hint}: {sanitize_error(snippet)}",
+        }
+
+    try:
+        data = response.json()
+    except ValueError:
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "latency_ms": latency_ms,
+            "error": "응답이 JSON 형식이 아닙니다.",
+        }
+
+    sample = ""
+    if isinstance(data, dict):
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            message = choices[0].get("message") if isinstance(choices[0], dict) else None
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    sample = content.strip()[:120]
+    return {
+        "ok": True,
+        "status_code": response.status_code,
+        "latency_ms": latency_ms,
+        "sample": sample,
+        "model": model,
+    }
+
+
 def sanitize_error(message: str) -> str:
     message = re.sub(r"sk-[A-Za-z0-9_-]+", "sk-********", message)
     message = re.sub(r"(--api-key['\", ]+)([^'\",\\]]+)", r"\1********", message)
@@ -1075,6 +1266,43 @@ INDEX_HTML = r"""<!doctype html>
     .badge.done { background: color-mix(in srgb, var(--teal) 18%, var(--surface-3)); color: var(--teal); }
     .badge.failed { background: color-mix(in srgb, var(--danger) 18%, var(--surface-3)); color: var(--danger); }
     .badge.cancelled, .badge.cancelling { background: color-mix(in srgb, var(--muted) 22%, var(--surface-3)); color: var(--muted); }
+    .api-key-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .api-key-row button { white-space: nowrap; }
+    .test-result {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--field-border);
+      background: var(--surface-3);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .test-result.ok { border-color: color-mix(in srgb, var(--teal) 60%, var(--field-border)); color: var(--teal); }
+    .test-result.fail { border-color: color-mix(in srgb, var(--danger) 50%, var(--field-border)); color: var(--danger); }
+    .test-result.busy { color: var(--muted); }
+    .model-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .model-chip {
+      height: auto;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--field-border);
+      border-radius: 999px;
+      background: var(--surface-3);
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .model-chip:hover { border-color: var(--blue); color: var(--blue); }
+    .model-chip.active {
+      border-color: var(--blue);
+      background: color-mix(in srgb, var(--blue) 22%, var(--surface-3));
+      color: var(--blue);
+    }
     .upload-progress { margin-top: 12px; display: grid; gap: 6px; }
     .upload-progress-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
     .upload-progress-bar > div { height: 100%; width: 0%; background: linear-gradient(90deg, var(--blue), var(--teal)); transition: width 120ms linear; }
@@ -1304,9 +1532,19 @@ INDEX_HTML = r"""<!doctype html>
         <label for="baseUrl">Base URL</label>
         <input id="baseUrl" placeholder="http://localhost:8300/v1" />
         <label for="model">Model</label>
-        <input id="model" placeholder="gpt-5.5" />
+        <div class="api-key-row">
+          <input id="model" list="modelOptions" placeholder="gpt-5.5 (로컬은 자동 조회)" autocomplete="off" />
+          <button id="refreshModels" class="secondary" type="button" title="사용 가능한 모델 목록 다시 가져오기">↻ 모델</button>
+        </div>
+        <datalist id="modelOptions"></datalist>
+        <div id="modelChips" class="model-chips" hidden></div>
+        <div id="modelHint" class="hint"></div>
         <label for="apiKey">API Key</label>
-        <input id="apiKey" type="password" placeholder="sk-..." />
+        <div class="api-key-row">
+          <input id="apiKey" type="password" placeholder="sk-... (Ollama 등 로컬은 비워두세요)" />
+          <button id="testLlm" class="secondary" type="button">테스트</button>
+        </div>
+        <div id="testResult" class="test-result hint" hidden></div>
         <div id="providerHint" class="hint"></div>
       </div>
 
@@ -1391,17 +1629,165 @@ INDEX_HTML = r"""<!doctype html>
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
     const customPrefix = "custom:";
-    const settingsVersion = 2;
+    const settingsVersion = 3;
+
+    // === API key 암호화 keystore (WebCrypto AES-GCM + IndexedDB 비추출 키) ===
+    const KEYSTORE_DB = "starSlideKeystore";
+    const KEYSTORE_STORE = "keys";
+    const KEYSTORE_KEY_NAME = "apiKeyMaster.v1";
+    let _cryptoKeyPromise = null;
+    let _settingsCache = null;
+
+    function openKeystore() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(KEYSTORE_DB, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(KEYSTORE_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function getOrCreateMasterKey() {
+      const db = await openKeystore();
+      const existing = await new Promise((resolve, reject) => {
+        const tx = db.transaction(KEYSTORE_STORE, "readonly");
+        const req = tx.objectStore(KEYSTORE_STORE).get(KEYSTORE_KEY_NAME);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+      if (existing) { db.close(); return existing; }
+      const key = await crypto.subtle.generateKey(
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(KEYSTORE_STORE, "readwrite");
+        tx.objectStore(KEYSTORE_STORE).put(key, KEYSTORE_KEY_NAME);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+      return key;
+    }
+
+    function masterKey() {
+      if (!_cryptoKeyPromise) _cryptoKeyPromise = getOrCreateMasterKey();
+      return _cryptoKeyPromise;
+    }
+
+    function bytesToBase64(bytes) {
+      let s = "";
+      for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return btoa(s);
+    }
+
+    function base64ToBytes(b64) {
+      const s = atob(b64);
+      const out = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+      return out;
+    }
+
+    async function encryptApiKey(plain) {
+      if (!plain) return "";
+      const key = await masterKey();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
+      const merged = new Uint8Array(iv.length + ct.byteLength);
+      merged.set(iv, 0);
+      merged.set(new Uint8Array(ct), iv.length);
+      return bytesToBase64(merged);
+    }
+
+    async function decryptApiKey(enc) {
+      if (!enc) return "";
+      try {
+        const key = await masterKey();
+        const merged = base64ToBytes(enc);
+        const iv = merged.slice(0, 12);
+        const ct = merged.slice(12);
+        const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+        return new TextDecoder().decode(plain);
+      } catch (err) {
+        console.warn("API key 복호화 실패 (키 회전 또는 저장소 손상)", err);
+        return "";
+      }
+    }
+
+    async function importSettingsFromStorage() {
+      let raw;
+      try { raw = JSON.parse(localStorage.getItem(settingsKey) || "{}"); } catch { raw = {}; }
+      if (!raw || typeof raw !== "object") raw = {};
+      raw.providers = raw.providers || {};
+      for (const id of Object.keys(raw.providers)) {
+        const p = raw.providers[id];
+        if (p && typeof p === "object") {
+          if (p.apiKeyEnc) p.apiKey = await decryptApiKey(p.apiKeyEnc);
+          else if (typeof p.apiKey !== "string") p.apiKey = "";
+        }
+      }
+      raw.customProviders = Array.isArray(raw.customProviders) ? raw.customProviders : [];
+      for (const p of raw.customProviders) {
+        if (!p || typeof p !== "object") continue;
+        if (p.apiKeyEnc) p.apiKey = await decryptApiKey(p.apiKeyEnc);
+        else if (typeof p.apiKey !== "string") p.apiKey = "";
+      }
+      return raw;
+    }
+
+    async function exportSettingsToStorage(settings) {
+      const out = JSON.parse(JSON.stringify(settings || {}));
+      out.providers = out.providers || {};
+      for (const id of Object.keys(out.providers)) {
+        const p = out.providers[id];
+        if (p && typeof p === "object") {
+          p.apiKeyEnc = await encryptApiKey(p.apiKey || "");
+          delete p.apiKey;
+        }
+      }
+      out.customProviders = Array.isArray(out.customProviders) ? out.customProviders : [];
+      for (const p of out.customProviders) {
+        if (!p || typeof p !== "object") continue;
+        p.apiKeyEnc = await encryptApiKey(p.apiKey || "");
+        delete p.apiKey;
+      }
+      out.settingsVersion = settingsVersion;
+      localStorage.setItem(settingsKey, JSON.stringify(out));
+    }
+
+    function hasLegacyPlaintextKey() {
+      let raw;
+      try { raw = JSON.parse(localStorage.getItem(settingsKey) || "{}"); } catch { return false; }
+      if (!raw || typeof raw !== "object") return false;
+      const providers = raw.providers || {};
+      for (const id of Object.keys(providers)) {
+        const p = providers[id];
+        if (p && typeof p === "object" && p.apiKey && !p.apiKeyEnc) return true;
+      }
+      const customs = Array.isArray(raw.customProviders) ? raw.customProviders : [];
+      for (const p of customs) {
+        if (p && typeof p === "object" && p.apiKey && !p.apiKeyEnc) return true;
+      }
+      return false;
+    }
 
     async function init() {
       applyTheme(localStorage.getItem(themeKey) || "dark");
       presets = await (await fetch("/api/presets")).json();
+      const needsMigration = hasLegacyPlaintextKey();
+      _settingsCache = await importSettingsFromStorage();
+      if (needsMigration) {
+        try { await exportSettingsToStorage(_settingsCache); } catch (err) { console.warn("API key 마이그레이션 실패", err); }
+      }
       loadSettings();
       $("provider").addEventListener("change", changeProvider);
       $("addCustom").addEventListener("click", addCustomProvider);
       $("deleteCustom").addEventListener("click", deleteCustomProvider);
       $("customName").addEventListener("change", renameSelectedCustomProvider);
       $("save").addEventListener("click", saveSettings);
+      $("testLlm").addEventListener("click", testLlmSettings);
+      $("refreshModels").addEventListener("click", () => fetchModelList(true));
       $("start").addEventListener("click", submit);
       $("themeToggle").addEventListener("click", toggleTheme);
       document.addEventListener("keydown", handleGlobalKey);
@@ -1479,14 +1865,15 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function readStoredSettings() {
-      try {
-        const saved = JSON.parse(localStorage.getItem(settingsKey) || "{}");
-        const normalized = normalizeSettings(saved);
-        if (normalized.changed) localStorage.setItem(settingsKey, JSON.stringify(normalized.settings));
-        return normalized.settings;
-      } catch {
-        return normalizeSettings({}).settings;
+      const base = _settingsCache && typeof _settingsCache === "object"
+        ? JSON.parse(JSON.stringify(_settingsCache))
+        : {};
+      const normalized = normalizeSettings(base);
+      if (normalized.changed) {
+        _settingsCache = JSON.parse(JSON.stringify(normalized.settings));
+        exportSettingsToStorage(_settingsCache).catch(err => console.warn("settings export 실패", err));
       }
+      return normalized.settings;
     }
 
     function normalizeSettings(raw) {
@@ -1531,8 +1918,10 @@ INDEX_HTML = r"""<!doctype html>
           changed = true;
         }
       }
-      if (saved.settingsVersion !== settingsVersion) {
+      if (!saved.settingsVersion) {
         saved.options = {...(saved.options || {}), sam3: false};
+      }
+      if (saved.settingsVersion !== settingsVersion) {
         saved.settingsVersion = settingsVersion;
         changed = true;
       }
@@ -1545,7 +1934,8 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function writeStoredSettings(settings) {
-      localStorage.setItem(settingsKey, JSON.stringify(settings));
+      _settingsCache = JSON.parse(JSON.stringify(settings));
+      exportSettingsToStorage(_settingsCache).catch(err => console.warn("settings export 실패", err));
     }
 
     function builtInProviders() {
@@ -1655,6 +2045,11 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function applyProvider(overwrite = true) {
+      // provider가 바뀌면 이전 테스트/모델 hint는 컨텍스트가 달라지므로 항상 클리어
+      setTestResult(null);
+      setModelHint("");
+      clearModelOptions();
+
       const providerId = $("provider").value;
       const saved = readStoredSettings();
       const customProvider = findCustomProvider(saved, providerId);
@@ -1665,6 +2060,7 @@ INDEX_HTML = r"""<!doctype html>
         $("model").value = customProvider.model || "";
         $("apiKey").value = customProvider.apiKey || "";
         $("providerHint").textContent = "등록한 OpenAI 호환 provider입니다. 이름, URL, 모델명, API key를 수정한 뒤 설정 저장을 누르면 목록에 반영됩니다.";
+        maybeAutoFetchModels();
         return;
       }
 
@@ -1675,6 +2071,7 @@ INDEX_HTML = r"""<!doctype html>
       $("model").value = overwrite ? (preset.model || "") : (providerSettings.model ?? preset.model ?? "");
       $("apiKey").value = overwrite ? "" : (providerSettings.apiKey ?? "");
       $("providerHint").textContent = preset.hint || "";
+      maybeAutoFetchModels();
     }
 
     function addCustomProvider() {
@@ -1758,6 +2155,148 @@ INDEX_HTML = r"""<!doctype html>
     function selectFile(file) {
       selectedFile = file || null;
       $("fileLabel").textContent = selectedFile ? `${selectedFile.name} (${Math.round(selectedFile.size / 1024 / 1024 * 10) / 10} MB)` : "NotebookLM에서 내려받은 .pptx 또는 .pdf 파일";
+      // 새 파일을 고르면 이전 작업의 업로드 진행률/완료 메시지는 무관하므로 즉시 클리어
+      setUploadProgress(false, 0, "");
+    }
+
+    let currentModelList = [];
+
+    function renderModelChips(models) {
+      currentModelList = Array.isArray(models) ? models : [];
+      const root = $("modelChips");
+      if (!currentModelList.length) { root.hidden = true; root.innerHTML = ""; return; }
+      const current = $("model").value.trim();
+      root.hidden = false;
+      root.innerHTML = currentModelList.map(m => {
+        const safe = escapeHtml(m);
+        const active = m === current ? " active" : "";
+        return `<button type="button" class="model-chip${active}" data-model="${safe}">${safe}</button>`;
+      }).join("");
+      root.querySelectorAll(".model-chip").forEach(btn => {
+        btn.addEventListener("click", () => pickModel(btn.dataset.model));
+      });
+    }
+
+    function pickModel(name) {
+      $("model").value = name;
+      renderModelChips(currentModelList);
+    }
+
+    function clearModelOptions() {
+      $("modelOptions").innerHTML = "";
+      $("modelChips").innerHTML = "";
+      $("modelChips").hidden = true;
+      currentModelList = [];
+    }
+
+    function isLocalHost(baseUrl) {
+      if (!baseUrl) return false;
+      try {
+        const u = new URL(baseUrl);
+        return ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(u.hostname);
+      } catch { return false; }
+    }
+
+    function setModelHint(message, state) {
+      const root = $("modelHint");
+      if (!message) { root.textContent = ""; root.style.color = ""; return; }
+      root.textContent = message;
+      root.style.color = state === "fail" ? "var(--danger)" : state === "ok" ? "var(--teal)" : "";
+    }
+
+    async function fetchModelList(manual) {
+      const baseUrl = $("baseUrl").value.trim();
+      const apiKey = $("apiKey").value;
+      if (!baseUrl) {
+        if (manual) setModelHint("Base URL을 먼저 입력하세요.", "fail");
+        return;
+      }
+      const button = $("refreshModels");
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "조회 중...";
+      setModelHint("모델 목록을 가져오는 중...");
+      try {
+        const response = await fetch("/api/list-models", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({baseUrl, apiKey, timeout: 10}),
+        });
+        const data = await response.json();
+        const models = Array.isArray(data.models) ? data.models : [];
+        const datalist = $("modelOptions");
+        datalist.innerHTML = models.map(m => `<option value="${escapeHtml(m)}"></option>`).join("");
+        renderModelChips(models);
+        if (models.length === 0) {
+          setModelHint(manual ? "모델 목록을 가져오지 못했습니다 (서버가 /v1/models를 미지원할 수 있음). 직접 입력하세요." : "", "fail");
+        } else {
+          if (!$("model").value) {
+            $("model").value = models[0];
+            renderModelChips(models);
+          }
+          setModelHint(`사용 가능한 모델 ${models.length}개 — 칩을 클릭하거나 직접 입력하세요`, "ok");
+        }
+      } catch (error) {
+        setModelHint(`모델 목록 요청 실패: ${error.message}`, "fail");
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    }
+
+    function maybeAutoFetchModels() {
+      // 로컬 호스트면 자동 페치, 외부 provider면 datalist/chips/hint 모두 클리어
+      if (isLocalHost($("baseUrl").value.trim())) {
+        fetchModelList(false);
+      } else {
+        clearModelOptions();
+        setModelHint("");
+      }
+    }
+
+    function setTestResult(state, message) {
+      const root = $("testResult");
+      if (!state) { root.hidden = true; root.textContent = ""; root.className = "test-result hint"; return; }
+      root.hidden = false;
+      root.className = `test-result hint ${state}`;
+      root.textContent = message;
+    }
+
+    async function testLlmSettings() {
+      const baseUrl = $("baseUrl").value.trim();
+      const model = $("model").value.trim();
+      const apiKey = $("apiKey").value;
+      if (!baseUrl) { setTestResult("fail", "Base URL을 입력하세요."); return; }
+      if (!model) { setTestResult("fail", "Model 이름을 입력하세요."); return; }
+
+      const button = $("testLlm");
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "확인 중...";
+      const keyNote = apiKey ? "" : " (API key 미설정 — Ollama/로컬 프록시 모드)";
+      setTestResult("busy", `${baseUrl} 로 테스트 호출 중...${keyNote}`);
+
+      try {
+        const response = await fetch("/api/test-llm", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({baseUrl, model, apiKey, timeout: 15}),
+        });
+        const data = await response.json();
+        if (data.ok) {
+          const sample = data.sample ? ` · "${data.sample}"` : "";
+          const note = data.note ? ` · ${data.note}` : "";
+          setTestResult("ok", `✓ 성공 · ${data.latency_ms}ms · ${data.model}${sample}${keyNote}${note}`);
+        } else {
+          const lat = data.latency_ms !== undefined ? ` (${data.latency_ms}ms)` : "";
+          setTestResult("fail", `✗ ${data.error || "알 수 없는 오류"}${lat}`);
+        }
+      } catch (error) {
+        setTestResult("fail", `✗ 요청 실패: ${error.message}`);
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
     }
 
     function setUploadProgress(visible, percent, label) {

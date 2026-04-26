@@ -68,7 +68,7 @@ NotebookLM 변환 웹앱의 체감 UX를 3축으로 개선한다.
     - `JobState`에 `events: list[dict]` (최근 N=50) + `subscribers: set[asyncio.Queue]` 추가 (lock 보호).
     - `update_job` 호출 시 변경된 필드를 이벤트로 push.
     - `GET /api/jobs/{id}/events` → `StreamingResponse` (text/event-stream). 연결 시 현재 snapshot 1회 + 이후 변화 push. heartbeat 15s.
-  - Done: curl로 SSE 스트림 수신 확인 (`curl -N http://127.0.0.1:8787/api/jobs/<id>/events`).
+  - Done: curl로 SSE 스트림 수신 확인 (`curl -N http://127.0.0.1:5400/api/jobs/<id>/events`).
   - 검증: 신규 `tests/integration/test_web_app_sse.py` 1건 (FastAPI TestClient + asyncio).
 
 - [x] **T4: 작업 취소 엔드포인트 + ThreadPool 연동**
