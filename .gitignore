@@ -51,6 +51,8 @@ Thumbs.db
 
 # Runtime data (large) — manifest/라벨 JSON과 가이드는 추적, 이미지/원본만 제외
 data/
+.session/
+.github/workflows/ci.yml
 storage/
 models/
 
