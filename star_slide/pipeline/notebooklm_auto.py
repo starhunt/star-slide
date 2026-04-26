@@ -53,6 +53,10 @@ class NotebookLmAutoResult:
     montage: Path | None = None
 
 
+class JobCancelledError(RuntimeError):
+    """Raised by convert_notebooklm_auto when the cancel callback returns True."""
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -425,14 +429,20 @@ def convert_notebooklm_auto(
     output_path: Path,
     workdir: Path,
     options: NotebookLmAutoOptions,
-    progress: Callable[[str, float], None] | None = None,
+    progress: Callable[..., None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> NotebookLmAutoResult:
     def emit(message: str, percent: float) -> None:
         if progress is not None:
             progress(message, percent)
 
+    def check_cancel() -> None:
+        if cancel is not None and cancel():
+            raise JobCancelledError("convert_notebooklm_auto cancelled")
+
     workdir.mkdir(parents=True, exist_ok=True)
 
+    check_cancel()
     emit("슬라이드 이미지 추출 중", 3)
     image_dir = workdir / "images"
     suffix = input_path.suffix.lower()
@@ -446,6 +456,7 @@ def convert_notebooklm_auto(
         raise RuntimeError(f"no slide images extracted from {input_path}")
     images = sorted(images)
 
+    check_cancel()
     emit("Vision LLM layout JSON 생성 중", 10)
     vector_layout_dir = workdir / "layouts_vector"
     generate_layouts(
@@ -455,6 +466,7 @@ def convert_notebooklm_auto(
         cache_buster=f"job-{safe_arg_token(input_path.stem)}-layout",
     )
 
+    check_cancel()
     emit("vector PPTX 렌더 QA 중", 38)
     vector_pptx = workdir / "vector.pptx"
     vector_qa_dir = workdir / "qa_vector"
@@ -467,6 +479,7 @@ def convert_notebooklm_auto(
         font_scale=options.font_scale,
     )
 
+    check_cancel()
     emit("큰 이미지 그룹 탐지 중", 48)
     groups_dir = workdir / "raster_groups"
     detect_groups(
@@ -476,11 +489,13 @@ def convert_notebooklm_auto(
         nonce=f"job-{safe_arg_token(input_path.stem)}-raster",
     )
 
+    check_cancel()
     emit("SAM3 이미지 그룹 보정 중", 60)
     sam_dir = workdir / "raster_groups_sam3" if options.use_sam3 else None
     if sam_dir is not None:
         refine_groups_sam3(images=images, groups_dir=groups_dir, out_dir=sam_dir)
 
+    check_cancel()
     emit("hybrid layout 생성 중", 70)
     hybrid_layout_dir = workdir / "layouts_hybrid"
     build_hybrid_layouts(
@@ -493,6 +508,7 @@ def convert_notebooklm_auto(
         editable_embedded_text=options.editable_embedded_text,
     )
 
+    check_cancel()
     emit("hybrid PPTX 렌더 QA 중", 78)
     hybrid_pptx = workdir / "hybrid.pptx"
     hybrid_qa_dir = workdir / "qa_hybrid"
@@ -505,6 +521,7 @@ def convert_notebooklm_auto(
         font_scale=options.font_scale,
     )
 
+    check_cancel()
     emit("최종 layout 자동 선택 중", 88)
     selected_layout_dir = workdir / "layouts_selected"
     selection_report = select_layouts(
@@ -517,6 +534,7 @@ def convert_notebooklm_auto(
         allowed_delta=options.hybrid_allowed_delta,
     )
 
+    check_cancel()
     emit("최종 PPTX 생성 및 미리보기 렌더링 중", 93)
     selected_qa_dir = workdir / "qa_selected"
     build_layout_qa(

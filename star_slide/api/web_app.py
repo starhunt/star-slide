@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import importlib.util
 import json
 import re
@@ -10,17 +12,33 @@ import time
 import traceback
 import uuid
 import zipfile
+from collections.abc import AsyncIterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from typing import Any
 
-from star_slide.pipeline.notebooklm_auto import NotebookLmAutoOptions, convert_notebooklm_auto
+from star_slide.api.events import EventBus, format_sse
+from star_slide.api.preview_assets import (
+    PREVIEW_KINDS,
+    generate_previews,
+    index_previews,
+)
+from star_slide.pipeline.notebooklm_auto import (
+    JobCancelledError,
+    NotebookLmAutoOptions,
+    convert_notebooklm_auto,
+)
 
 try:
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+    from fastapi.responses import (
+        FileResponse,
+        HTMLResponse,
+        JSONResponse,
+        StreamingResponse,
+    )
 except ImportError as exc:  # pragma: no cover - exercised by runtime environment
     raise RuntimeError(
         "FastAPI 의존성이 필요합니다. `uv run --extra api star-slide web run`으로 실행하세요."
@@ -30,6 +48,8 @@ except ImportError as exc:  # pragma: no cover - exercised by runtime environmen
 WEB_ROOT = Path("output/web_jobs")
 ALLOWED_SUFFIXES = {".pptx", ".pdf"}
 MAX_UPLOAD_BYTES = 300 * 1024 * 1024
+SSE_HEARTBEAT_SECONDS = 15.0
+TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
 
 
 @dataclass
@@ -46,7 +66,11 @@ class JobState:
     output: str | None = None
     report: str | None = None
     montage: str | None = None
+    input_path: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
+    raw_options: dict[str, Any] = field(default_factory=dict)
+    cancel_event: Event = field(default_factory=Event)
+    bus: EventBus = field(default_factory=EventBus)
 
 
 jobs: dict[str, JobState] = {}
@@ -173,7 +197,9 @@ def create_app() -> FastAPI:
             output=str(job_dir / "result.pptx"),
             report=str(job_dir / "artifacts" / "report.json"),
             montage=str(job_dir / "artifacts" / "montage.png"),
+            input_path=str(input_path),
             options=public_options(options_payload),
+            raw_options=dict(options_payload),
         )
         with jobs_lock:
             jobs[job_id] = state
@@ -242,7 +268,118 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Layout JSON 산출물이 없습니다.")
         return build_layout_summary(job, path)
 
+    @app.get("/api/jobs/{job_id}/events")
+    async def events(job_id: str, request: Request) -> StreamingResponse:
+        job = require_job(job_id)
+        bus = job.bus
+        loop = asyncio.get_running_loop()
+        queue = bus.subscribe(loop)
+
+        async def stream() -> AsyncIterator[bytes]:
+            try:
+                yield format_sse(job_snapshot(job), event="snapshot").encode("utf-8")
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=SSE_HEARTBEAT_SECONDS)
+                    except TimeoutError:
+                        yield b": heartbeat\n\n"
+                        continue
+                    if item is None:
+                        return
+                    yield format_sse(item, event="snapshot").encode("utf-8")
+                    if item.get("status") in TERMINAL_STATUSES:
+                        return
+            finally:
+                bus.unsubscribe(loop, queue)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel(job_id: str) -> JSONResponse:
+        job = require_job(job_id)
+        if job.status in TERMINAL_STATUSES:
+            return JSONResponse(job_snapshot(job))
+        job.cancel_event.set()
+        future = futures.get(job_id)
+        if future is not None and not future.running():
+            future.cancel()
+        if job.status == "queued":
+            update_job(job_id, status="cancelled", phase="취소됨", progress=100)
+        else:
+            update_job(job_id, phase="취소 중...", status="cancelling")
+        return JSONResponse(job_snapshot(require_job(job_id)))
+
+    @app.post("/api/jobs/{job_id}/rerun")
+    def rerun(job_id: str) -> JSONResponse:
+        job = require_job(job_id)
+        if job.status not in TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail="진행 중인 작업은 다시 실행할 수 없습니다.")
+        if not job.input_path or not Path(job.input_path).exists():
+            raise HTTPException(status_code=410, detail="원본 입력 파일을 찾을 수 없어 재실행이 불가능합니다.")
+        new_job_id = uuid.uuid4().hex
+        job_dir = WEB_ROOT / new_job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        new_input = job_dir / Path(job.input_path).name
+        shutil.copy2(job.input_path, new_input)
+        new_state = JobState(
+            id=new_job_id,
+            filename=job.filename,
+            workdir=str(job_dir / "work"),
+            output=str(job_dir / "result.pptx"),
+            report=str(job_dir / "artifacts" / "report.json"),
+            montage=str(job_dir / "artifacts" / "montage.png"),
+            input_path=str(new_input),
+            options=public_options(job.raw_options),
+            raw_options=dict(job.raw_options),
+        )
+        with jobs_lock:
+            jobs[new_job_id] = new_state
+            futures[new_job_id] = executor.submit(run_job, new_job_id, new_input, job_dir, dict(job.raw_options))
+        return JSONResponse(job_snapshot(new_state))
+
+    @app.get("/api/jobs/{job_id}/previews")
+    def previews_index(job_id: str) -> dict[str, Any]:
+        job = require_job(job_id)
+        out_dir = previews_dir_for(job)
+        entries = index_previews(out_dir)
+        return {
+            "job": {"id": job.id, "filename": job.filename},
+            "kinds": list(PREVIEW_KINDS),
+            "slides": [{"slide_no": entry.slide_no, "kinds": list(entry.kinds)} for entry in entries],
+        }
+
+    @app.get("/api/jobs/{job_id}/previews/{slide_no}/{kind}")
+    def preview_image(job_id: str, slide_no: int, kind: str) -> FileResponse:
+        if kind not in PREVIEW_KINDS:
+            raise HTTPException(status_code=404, detail="지원하지 않는 preview kind 입니다.")
+        job = require_job(job_id)
+        out_dir = previews_dir_for(job)
+        path = out_dir / f"{slide_no:03d}_{kind}.jpg"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="해당 슬라이드 미리보기가 없습니다.")
+        return FileResponse(
+            path,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "max-age=3600"},
+        )
+
     return app
+
+
+def previews_dir_for(job: JobState) -> Path:
+    if job.report:
+        return Path(job.report).parent / "previews"
+    return WEB_ROOT / job.id / "artifacts" / "previews"
 
 
 def sync_saved_jobs() -> None:
@@ -282,6 +419,7 @@ def sync_saved_jobs() -> None:
             output=str(result),
             report=str(report) if report.exists() else None,
             montage=str(montage) if montage.exists() else None,
+            input_path=str(source) if source else None,
         )
         with jobs_lock:
             jobs.setdefault(state.id, state)
@@ -355,8 +493,26 @@ def require_job(job_id: str) -> JobState:
     return job
 
 
+SERIALIZABLE_JOB_FIELDS = (
+    "id",
+    "filename",
+    "status",
+    "phase",
+    "progress",
+    "created_at",
+    "updated_at",
+    "error",
+    "workdir",
+    "output",
+    "report",
+    "montage",
+    "input_path",
+    "options",
+)
+
+
 def job_snapshot(job: JobState) -> dict[str, Any]:
-    data = asdict(job)
+    data: dict[str, Any] = {key: getattr(job, key) for key in SERIALIZABLE_JOB_FIELDS}
     if job.status == "done":
         data["artifacts"] = {
             "layout_json": bool((path := resolve_artifact_path(job, "layout-json")) and path.exists()),
@@ -418,18 +574,33 @@ def python_module_available(name: str) -> bool:
 
 def update_job(job_id: str, **changes: Any) -> None:
     with jobs_lock:
-        job = jobs[job_id]
+        job = jobs.get(job_id)
+        if job is None:
+            return
         for key, value in changes.items():
             setattr(job, key, value)
         job.updated_at = time.time()
+        snapshot = job_snapshot(job)
+        bus = job.bus
+        terminal = job.status in TERMINAL_STATUSES
+    bus.publish(snapshot)
+    if terminal:
+        bus.close()
 
 
 def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any]) -> None:
-    def progress(message: str, percent: float) -> None:
+    def progress(message: str, percent: float, *_: Any, **__: Any) -> None:
         update_job(job_id, status="running", phase=message, progress=percent)
 
+    with jobs_lock:
+        job_for_cancel = jobs.get(job_id)
+    cancel_event = job_for_cancel.cancel_event if job_for_cancel else None
+
+    def cancel_check() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     try:
-        update_job(job_id, status="running", phase="작업 시작", progress=1)
+        update_job(job_id, status="running", phase="작업 시작", progress=1, error=None)
         output_path = job_dir / "result.pptx"
         workdir = job_dir / "work"
         options = NotebookLmAutoOptions(
@@ -451,7 +622,11 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             workdir=workdir,
             options=options,
             progress=progress,
+            cancel=cancel_check,
         )
+        previews_dir = job_dir / "artifacts" / "previews"
+        with contextlib.suppress(Exception):  # preview generation is best-effort
+            generate_previews(workdir=workdir, out_dir=previews_dir)
         update_job(
             job_id,
             status="done",
@@ -461,6 +636,8 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             report=str(result.report),
             montage=str(result.montage) if result.montage else None,
         )
+    except JobCancelledError:
+        update_job(job_id, status="cancelled", phase="취소됨", progress=100, error=None)
     except Exception as exc:  # pragma: no cover - depends on external tools/model
         error_path = job_dir / "error.log"
         error_path.write_text(sanitize_error(traceback.format_exc()), encoding="utf-8")
@@ -622,24 +799,53 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--bg);
     }
     header {
-      height: 64px;
+      height: 68px;
       display: grid;
-      grid-template-columns: minmax(160px, 240px) minmax(0, 1fr) minmax(160px, 240px);
+      grid-template-columns: minmax(220px, auto) minmax(0, 1fr) minmax(160px, 240px);
       align-items: center;
       padding: 0 28px;
       border-bottom: 1px solid var(--line);
-      background: var(--surface);
+      background: linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, var(--surface) 92%, var(--blue)) 100%);
+      box-shadow: 0 1px 0 color-mix(in srgb, var(--blue) 18%, transparent);
     }
-    .brand { font-size: 19px; font-weight: 750; }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      background: linear-gradient(90deg, var(--ink) 0%, var(--teal) 110%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      display: inline-grid;
+      place-items: center;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 800;
+      box-shadow: 0 4px 14px color-mix(in srgb, var(--blue) 35%, transparent);
+    }
     .tagline {
       min-width: 0;
       text-align: center;
       font-size: 15px;
-      font-weight: 800;
-      color: var(--ink);
+      font-weight: 700;
+      letter-spacing: -0.005em;
+      color: color-mix(in srgb, var(--ink) 88%, var(--muted));
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .tagline strong {
+      color: var(--teal);
+      font-weight: 800;
     }
     .header-actions {
       display: flex;
@@ -656,7 +862,7 @@ INDEX_HTML = r"""<!doctype html>
     .shell {
       display: grid;
       grid-template-columns: minmax(420px, 520px) minmax(0, 1fr);
-      min-height: calc(100vh - 64px);
+      min-height: calc(100vh - 68px);
     }
     aside {
       border-right: 1px solid var(--line);
@@ -664,9 +870,44 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--surface);
       overflow-y: auto;
     }
-    main { padding: 22px; overflow: auto; }
+    main { padding: 26px 28px; overflow: auto; }
     h1, h2, h3 { margin: 0; letter-spacing: 0; }
-    h2 { font-size: 16px; margin-bottom: 12px; }
+    h1 {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    h1::before {
+      content: "";
+      width: 4px;
+      height: 22px;
+      border-radius: 4px;
+      background: linear-gradient(180deg, var(--blue), var(--teal));
+    }
+    h2 {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h2::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--teal);
+    }
     label { display: block; font-size: 12px; font-weight: 700; color: var(--ink); margin: 12px 0 6px; }
     .label-row {
       display: flex;
@@ -833,6 +1074,76 @@ INDEX_HTML = r"""<!doctype html>
     }
     .badge.done { background: color-mix(in srgb, var(--teal) 18%, var(--surface-3)); color: var(--teal); }
     .badge.failed { background: color-mix(in srgb, var(--danger) 18%, var(--surface-3)); color: var(--danger); }
+    .badge.cancelled, .badge.cancelling { background: color-mix(in srgb, var(--muted) 22%, var(--surface-3)); color: var(--muted); }
+    .upload-progress { margin-top: 12px; display: grid; gap: 6px; }
+    .upload-progress-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+    .upload-progress-bar > div { height: 100%; width: 0%; background: linear-gradient(90deg, var(--blue), var(--teal)); transition: width 120ms linear; }
+    .preview-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .preview-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: var(--surface-3);
+      cursor: pointer;
+      display: grid;
+      gap: 6px;
+    }
+    .preview-card:hover { border-color: var(--blue); }
+    .preview-card img { width: 100%; height: auto; border-radius: 6px; display: block; background: var(--surface); }
+    .preview-card .meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+    .compare {
+      display: grid;
+      gap: 12px;
+    }
+    .compare-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .compare-toolbar .spacer { flex: 1; }
+    .compare-toolbar .kind-toggle {
+      display: inline-flex;
+      gap: 4px;
+      padding: 3px;
+      border: 1px solid var(--field-border);
+      border-radius: 8px;
+      background: var(--surface-3);
+    }
+    .compare-toolbar .kind-toggle button {
+      height: 28px;
+      padding: 0 10px;
+      border-radius: 5px;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+    }
+    .compare-toolbar .kind-toggle button.active { background: var(--blue); color: #fff; }
+    .compare-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .compare-pane {
+      display: grid;
+      gap: 6px;
+    }
+    .compare-pane img {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      display: block;
+    }
+    .compare-pane .label { font-size: 12px; color: var(--muted); }
+    @media (max-width: 720px) {
+      .compare-pair { grid-template-columns: 1fr; }
+    }
     .bar {
       height: 8px;
       border-radius: 999px;
@@ -884,6 +1195,20 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--surface-2);
     }
     .modal-body { padding: 18px; }
+    .modal-head h2,
+    .modal-body h2 {
+      font-size: 15px;
+      font-weight: 750;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--ink);
+      border-bottom: 0;
+      padding-bottom: 0;
+      margin-bottom: 12px;
+      display: block;
+    }
+    .modal-head h2::before,
+    .modal-body h2::before { content: none; }
     .preview {
       display: block;
       width: 100%;
@@ -929,8 +1254,8 @@ INDEX_HTML = r"""<!doctype html>
 </head>
 <body>
   <header>
-    <div class="brand">Star-Slide</div>
-    <div class="tagline">이미지 잠금 슬라이드를 편집 가능한 PPTX로 변환합니다</div>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">S</span><span>Star-Slide</span></div>
+    <div class="tagline">NotebookLM에서 생성한 이미지 슬라이드를 <strong>편집 가능한 PPTX</strong>로 변환</div>
     <div class="header-actions">
       <button id="themeToggle" class="secondary theme-toggle" type="button">라이트 모드</button>
     </div>
@@ -947,6 +1272,10 @@ INDEX_HTML = r"""<!doctype html>
       <input id="file" type="file" accept=".pptx,.pdf" hidden />
       <div class="actions upload-actions">
         <button id="start">변환 시작</button>
+      </div>
+      <div id="uploadProgress" class="upload-progress" hidden>
+        <div class="upload-progress-bar"><div></div></div>
+        <div class="upload-progress-label hint">업로드 0%</div>
       </div>
       <div id="systemCheck" class="system-box">
         <div class="hint">시스템 의존성을 확인하는 중입니다.</div>
@@ -1035,11 +1364,11 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </main>
   </div>
-  <div id="modalBackdrop" class="modal-backdrop" onclick="closeModal(event)">
-    <div class="modal" role="dialog" aria-modal="true">
+  <div id="modalBackdrop" class="modal-backdrop" onclick="closeModal(event)" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">
         <h2 id="modalTitle">상세</h2>
-        <button class="secondary" onclick="closeModal()">닫기</button>
+        <button class="secondary" onclick="closeModal()" aria-label="모달 닫기">닫기</button>
       </div>
       <div id="modalBody" class="modal-body"></div>
     </div>
@@ -1053,6 +1382,10 @@ INDEX_HTML = r"""<!doctype html>
     let activeProvider = "local";
     let currentPage = 1;
     const pageSize = 5;
+    const jobCache = new Map();
+    const sseSources = new Map();
+    let lastJobIds = [];
+    const compareState = { jobId: null, slides: [], index: 0, kind: "selected" };
 
     const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","sam3","editableEmbeddedText","keepIntermediates"];
     const settingsKey = "starSlideSettings";
@@ -1071,10 +1404,28 @@ INDEX_HTML = r"""<!doctype html>
       $("save").addEventListener("click", saveSettings);
       $("start").addEventListener("click", submit);
       $("themeToggle").addEventListener("click", toggleTheme);
+      document.addEventListener("keydown", handleGlobalKey);
       setupDrop();
       await loadSystemCheck();
       await refreshJobs();
       pollTimer = setInterval(refreshJobs, 2500);
+    }
+
+    function handleGlobalKey(event) {
+      if (!$("modalBackdrop").classList.contains("open")) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal();
+        return;
+      }
+      if (compareState.slides.length === 0) return;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        moveCompare(-1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        moveCompare(1);
+      }
     }
 
     async function loadSystemCheck() {
@@ -1409,31 +1760,56 @@ INDEX_HTML = r"""<!doctype html>
       $("fileLabel").textContent = selectedFile ? `${selectedFile.name} (${Math.round(selectedFile.size / 1024 / 1024 * 10) / 10} MB)` : "NotebookLM에서 내려받은 .pptx 또는 .pdf 파일";
     }
 
-    async function submit() {
+    function setUploadProgress(visible, percent, label) {
+      const root = $("uploadProgress");
+      if (!visible) { root.hidden = true; return; }
+      root.hidden = false;
+      root.querySelector(".upload-progress-bar > div").style.width = `${Math.max(0, Math.min(100, percent))}%`;
+      root.querySelector(".upload-progress-label").textContent = label || `업로드 ${Math.round(percent)}%`;
+    }
+
+    function submit() {
       if (!selectedFile) {
         alert("먼저 PPTX/PDF 파일을 선택하세요.");
         return;
       }
       saveSettings(false);
+      const file = selectedFile;
       $("start").disabled = true;
       $("start").textContent = "업로드 중";
-      try {
-        const response = await fetch(`/api/jobs?filename=${encodeURIComponent(selectedFile.name)}`, {
-          method: "POST",
-          headers: {"x-star-slide-options": JSON.stringify(readOptions(false))},
-          body: selectedFile,
-        });
-        if (!response.ok) throw new Error(await response.text());
-        selectedFile = null;
-        $("file").value = "";
-        $("fileLabel").textContent = "NotebookLM에서 내려받은 .pptx 또는 .pdf 파일";
-        await refreshJobs();
-      } catch (error) {
-        alert(`업로드 실패: ${error.message}`);
-      } finally {
+      setUploadProgress(true, 0, "업로드 0%");
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `/api/jobs?filename=${encodeURIComponent(file.name)}`, true);
+      xhr.setRequestHeader("x-star-slide-options", JSON.stringify(readOptions(false)));
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = (event.loaded / event.total) * 100;
+          setUploadProgress(true, percent, `업로드 ${Math.round(percent)}%`);
+        }
+      };
+      xhr.onload = () => {
         $("start").disabled = false;
         $("start").textContent = "변환 시작";
-      }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          setUploadProgress(true, 100, "업로드 완료, 변환 대기 중");
+          setTimeout(() => setUploadProgress(false, 0, ""), 1500);
+          selectedFile = null;
+          $("file").value = "";
+          $("fileLabel").textContent = "NotebookLM에서 내려받은 .pptx 또는 .pdf 파일";
+          refreshJobs();
+        } else {
+          setUploadProgress(false, 0, "");
+          alert(`업로드 실패: ${xhr.responseText || xhr.status}`);
+        }
+      };
+      xhr.onerror = () => {
+        $("start").disabled = false;
+        $("start").textContent = "변환 시작";
+        setUploadProgress(false, 0, "");
+        alert("업로드 실패: 네트워크 오류");
+      };
+      xhr.send(file);
     }
 
     async function refreshJobs() {
@@ -1441,13 +1817,29 @@ INDEX_HTML = r"""<!doctype html>
       const root = $("jobs");
       if (!jobs.length) {
         root.innerHTML = `<div class="empty">아직 실행한 작업이 없습니다.</div>`;
+        teardownAllSse();
+        lastJobIds = [];
         return;
       }
+      jobs.forEach(job => jobCache.set(job.id, job));
       const totalPages = Math.max(1, Math.ceil(jobs.length / pageSize));
       currentPage = Math.min(currentPage, totalPages);
       const start = (currentPage - 1) * pageSize;
       const pageJobs = jobs.slice(start, start + pageSize);
-      root.innerHTML = renderPager(jobs.length, totalPages) + pageJobs.map(renderJob).join("");
+
+      const pageIds = pageJobs.map(job => job.id);
+      const reuse = pageIds.length === lastJobIds.length && pageIds.every((id, i) => id === lastJobIds[i]);
+      if (!reuse) {
+        root.innerHTML = renderPager(jobs.length, totalPages) + pageJobs.map(renderJob).join("");
+        lastJobIds = pageIds;
+      } else {
+        pageJobs.forEach(updateJobCard);
+      }
+      pageJobs.forEach(maybeSubscribeSse);
+      const visibleIds = new Set(pageIds);
+      [...sseSources.keys()].forEach(id => {
+        if (!visibleIds.has(id)) teardownSse(id);
+      });
     }
 
     function renderPager(total, totalPages) {
@@ -1466,51 +1858,260 @@ INDEX_HTML = r"""<!doctype html>
       refreshJobs();
     }
 
+    function statusLabel(status) {
+      switch (status) {
+        case "done": return "완료";
+        case "failed": return "실패";
+        case "cancelled": return "취소됨";
+        case "cancelling": return "취소 중";
+        case "running": return "진행 중";
+        case "queued": return "대기 중";
+        default: return status;
+      }
+    }
+
+    function jobActions(job) {
+      const parts = [];
+      if (job.status === "done") {
+        parts.push(`<a class="button" href="/api/jobs/${job.id}/download">PPTX 다운로드</a>`);
+        parts.push(`<button class="secondary" onclick="openReport('${job.id}')">리포트 보기</button>`);
+        if (job.artifacts?.layout_json) {
+          parts.push(`<button class="secondary" onclick="openLayoutSummary('${job.id}')">Layout JSON 보기</button>`);
+        }
+        parts.push(`<button class="secondary" onclick="openPreview('${job.id}')">미리보기</button>`);
+      }
+      if (job.status === "running" || job.status === "queued") {
+        parts.push(`<button class="secondary" onclick="cancelJob('${job.id}')">취소</button>`);
+      }
+      if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
+        parts.push(`<button class="secondary" onclick="rerunJob('${job.id}')">다시 실행</button>`);
+      }
+      if (!parts.length) return "";
+      return `<div class="job-actions">${parts.join("")}</div>`;
+    }
+
     function renderJob(job) {
-      const statusClass = job.status === "done" ? "done" : job.status === "failed" ? "failed" : "";
-      const actions = job.status === "done" ? `
-        <div class="job-actions">
-          <a class="button" href="/api/jobs/${job.id}/download">PPTX 다운로드</a>
-          <button class="secondary" onclick="openReport('${job.id}')">리포트 보기</button>
-          ${job.artifacts?.layout_json ? `<button class="secondary" onclick="openLayoutSummary('${job.id}')">Layout JSON 보기</button>` : ""}
-          <button class="secondary" onclick="openPreview('${job.id}')">미리보기</button>
-        </div>
-      ` : "";
-      const error = job.error ? `<div class="hint" style="color:var(--danger);">${escapeHtml(job.error)}</div>` : "";
       const pct = Math.max(0, Math.min(100, job.progress || 0));
+      const error = job.error ? `<div class="hint job-error" style="color:var(--danger);">${escapeHtml(job.error)}</div>` : "";
       return `
-        <section class="job">
+        <section class="job" data-job-id="${job.id}">
           <div class="job-head">
             <div class="job-title">${escapeHtml(job.filename)}</div>
-            <span class="badge ${statusClass}">${job.status}</span>
+            <span class="badge ${job.status}">${statusLabel(job.status)}</span>
           </div>
-          <div class="hint">${escapeHtml(job.phase || "")}</div>
+          <div class="hint job-phase">${escapeHtml(job.phase || "")}</div>
           <div class="bar"><div style="width:${pct}%"></div></div>
           <div class="job-meta">
-            <span class="metric">${Math.round(pct)}%</span>
+            <span class="metric job-percent">${Math.round(pct)}%</span>
             <span class="metric">${new Date(job.created_at * 1000).toLocaleString()}</span>
             <span class="metric">${escapeHtml(job.options?.model || "")}</span>
           </div>
           ${error}
-          ${actions}
+          ${jobActions(job)}
         </section>
       `;
+    }
+
+    function updateJobCard(job) {
+      const card = document.querySelector(`section.job[data-job-id="${job.id}"]`);
+      if (!card) return;
+      const pct = Math.max(0, Math.min(100, job.progress || 0));
+      const badge = card.querySelector(".badge");
+      if (badge) {
+        badge.className = `badge ${job.status}`;
+        badge.textContent = statusLabel(job.status);
+      }
+      const phase = card.querySelector(".job-phase");
+      if (phase) phase.textContent = job.phase || "";
+      const bar = card.querySelector(".bar > div");
+      if (bar) bar.style.width = `${pct}%`;
+      const percent = card.querySelector(".job-percent");
+      if (percent) percent.textContent = `${Math.round(pct)}%`;
+      const oldErr = card.querySelector(".job-error");
+      if (oldErr) oldErr.remove();
+      if (job.error) {
+        const div = document.createElement("div");
+        div.className = "hint job-error";
+        div.style.color = "var(--danger)";
+        div.textContent = job.error;
+        const actions = card.querySelector(".job-actions");
+        card.insertBefore(div, actions || null);
+      }
+      const oldActions = card.querySelector(".job-actions");
+      const newHtml = jobActions(job);
+      if (oldActions) oldActions.remove();
+      if (newHtml) card.insertAdjacentHTML("beforeend", newHtml);
+    }
+
+    function maybeSubscribeSse(job) {
+      if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
+        teardownSse(job.id);
+        return;
+      }
+      if (sseSources.has(job.id)) return;
+      if (typeof EventSource === "undefined") return;
+      const es = new EventSource(`/api/jobs/${job.id}/events`);
+      sseSources.set(job.id, es);
+      es.addEventListener("snapshot", (evt) => {
+        try {
+          const snap = JSON.parse(evt.data);
+          jobCache.set(snap.id, snap);
+          updateJobCard(snap);
+          if (snap.status === "done" || snap.status === "failed" || snap.status === "cancelled") {
+            teardownSse(snap.id);
+            refreshJobs();
+          }
+        } catch {
+          /* ignore malformed payload */
+        }
+      });
+      es.onerror = () => teardownSse(job.id);
+    }
+
+    function teardownSse(jobId) {
+      const es = sseSources.get(jobId);
+      if (es) {
+        es.close();
+        sseSources.delete(jobId);
+      }
+    }
+
+    function teardownAllSse() {
+      sseSources.forEach(es => es.close());
+      sseSources.clear();
+    }
+
+    async function cancelJob(jobId) {
+      if (!confirm("이 작업을 취소하시겠습니까? 진행 단계가 끝난 직후 중단됩니다.")) return;
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+        if (!response.ok) throw new Error(await response.text());
+        const snap = await response.json();
+        jobCache.set(snap.id, snap);
+        updateJobCard(snap);
+      } catch (error) {
+        alert(`취소 실패: ${error.message}`);
+      }
+    }
+
+    async function rerunJob(jobId) {
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+        if (!response.ok) throw new Error(await response.text());
+        currentPage = 1;
+        await refreshJobs();
+      } catch (error) {
+        alert(`다시 실행 실패: ${error.message}`);
+      }
     }
 
     function openModal(title, html) {
       $("modalTitle").textContent = title;
       $("modalBody").innerHTML = html;
       $("modalBackdrop").classList.add("open");
+      $("modalBackdrop").setAttribute("aria-hidden", "false");
     }
 
     function closeModal(event) {
       if (event && event.target !== $("modalBackdrop")) return;
       $("modalBackdrop").classList.remove("open");
+      $("modalBackdrop").setAttribute("aria-hidden", "true");
       $("modalBody").innerHTML = "";
+      compareState.jobId = null;
+      compareState.slides = [];
+      compareState.index = 0;
     }
 
-    function openPreview(jobId) {
-      openModal("미리보기", `<img class="preview" src="/api/jobs/${jobId}/montage?ts=${Date.now()}" />`);
+    async function openPreview(jobId) {
+      openModal("슬라이드 미리보기", `<div class="empty">미리보기를 불러오는 중입니다.</div>`);
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/previews`);
+        if (response.status === 404) {
+          $("modalBody").innerHTML = `<img class="preview" src="/api/jobs/${jobId}/montage?ts=${Date.now()}" alt="montage" />`;
+          return;
+        }
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        if (!data.slides || !data.slides.length) {
+          $("modalBody").innerHTML = `<img class="preview" src="/api/jobs/${jobId}/montage?ts=${Date.now()}" alt="montage" />`;
+          return;
+        }
+        compareState.jobId = jobId;
+        compareState.slides = data.slides;
+        compareState.index = 0;
+        compareState.kind = data.slides[0].kinds.includes("selected") ? "selected" : data.slides[0].kinds[0];
+        $("modalBody").innerHTML = renderPreviewGrid(jobId, data);
+      } catch (error) {
+        $("modalBody").innerHTML = `<div class="empty" style="color:var(--danger);">미리보기 실패: ${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function renderPreviewGrid(jobId, data) {
+      const cards = data.slides.map((slide, i) => {
+        const kind = slide.kinds.includes("selected") ? "selected" : slide.kinds[0];
+        return `
+          <div class="preview-card" onclick="openCompare(${i})">
+            <img loading="lazy" src="/api/jobs/${jobId}/previews/${slide.slide_no}/${kind}" alt="slide ${slide.slide_no}" />
+            <div class="meta"><span>슬라이드 ${slide.slide_no}</span><span>${slide.kinds.length} 종</span></div>
+          </div>
+        `;
+      }).join("");
+      return `
+        <div class="hint">총 ${data.slides.length}장 · 카드를 클릭하면 원본/Vector/Hybrid 비교가 열립니다.</div>
+        <div class="preview-grid">${cards}</div>
+      `;
+    }
+
+    function openCompare(index) {
+      compareState.index = index;
+      $("modalBody").innerHTML = renderCompare();
+    }
+
+    function moveCompare(delta) {
+      const next = compareState.index + delta;
+      if (next < 0 || next >= compareState.slides.length) return;
+      compareState.index = next;
+      $("modalBody").innerHTML = renderCompare();
+    }
+
+    function setCompareKind(kind) {
+      compareState.kind = kind;
+      $("modalBody").innerHTML = renderCompare();
+    }
+
+    function renderCompare() {
+      const slide = compareState.slides[compareState.index];
+      if (!slide) return `<div class="empty">슬라이드를 찾을 수 없습니다.</div>`;
+      const jobId = compareState.jobId;
+      const availableRight = ["selected", "vector", "hybrid"].filter(k => slide.kinds.includes(k));
+      if (!availableRight.includes(compareState.kind)) compareState.kind = availableRight[0] || "selected";
+      const leftKind = slide.kinds.includes("original") ? "original" : slide.kinds[0];
+      const rightKind = compareState.kind;
+      const toggles = availableRight.map(k => `<button class="${k === rightKind ? "active" : ""}" onclick="setCompareKind('${k}')">${k}</button>`).join("");
+      return `
+        <div class="compare">
+          <div class="compare-toolbar">
+            <button class="secondary" onclick="moveCompare(-1)" ${compareState.index === 0 ? "disabled" : ""}>← 이전</button>
+            <span class="hint">슬라이드 ${slide.slide_no} · ${compareState.index + 1}/${compareState.slides.length}</span>
+            <button class="secondary" onclick="moveCompare(1)" ${compareState.index === compareState.slides.length - 1 ? "disabled" : ""}>다음 →</button>
+            <span class="spacer"></span>
+            <span class="hint">우측 비교 대상</span>
+            <span class="kind-toggle">${toggles}</span>
+            <button class="secondary" onclick="openPreview('${jobId}')">그리드로</button>
+          </div>
+          <div class="compare-pair">
+            <div class="compare-pane">
+              <span class="label">원본 (${leftKind})</span>
+              <img src="/api/jobs/${jobId}/previews/${slide.slide_no}/${leftKind}" alt="left ${slide.slide_no}" />
+            </div>
+            <div class="compare-pane">
+              <span class="label">변환 (${rightKind})</span>
+              <img src="/api/jobs/${jobId}/previews/${slide.slide_no}/${rightKind}" alt="right ${slide.slide_no}" />
+            </div>
+          </div>
+          <div class="hint">키보드: ← / → 슬라이드 이동, ESC 닫기</div>
+        </div>
+      `;
     }
 
     async function openReport(jobId) {
