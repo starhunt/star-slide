@@ -135,6 +135,7 @@ def should_keep_text(
     name = str(obj.get("name", "")).lower()
     font_size = float(obj.get("font_size", 0))
     text = str(obj.get("text") or " ".join(obj.get("lines", [])))
+    stripped = text.strip()
     if rasterize_embedded_labels:
         obj_overlap = overlap_ratio(box, group_box)
         if any(hint in name for hint in PRIMARY_TEXT_NAME_HINTS):
@@ -142,9 +143,35 @@ def should_keep_text(
         if "label" in name and obj_overlap >= 0.85:
             return False
         return bool(font_size >= 24 and obj_overlap < 0.85)
+    if is_raster_native_micro_label(obj, stripped):
+        return False
+    if stripped:
+        return True
     if any(hint in name for hint in TEXT_NAME_HINTS):
         return True
-    return bool(font_size >= 18 and len(text.strip()) >= 2)
+    return bool(font_size >= 18 and len(stripped) >= 2)
+
+
+def is_raster_native_micro_label(obj: dict[str, Any], text: str) -> bool:
+    """Keep tiny embedded badge labels/icons in the raster illustration.
+
+    These labels are usually already well rendered in the source image. Making
+    them editable creates visible inpaint seams inside small white badge panels.
+    Larger Korean/primary diagram labels are still kept editable.
+    """
+    name = str(obj.get("name", "")).lower()
+    font_size = float(obj.get("font_size", 0))
+    if "icon" in name or "dim_label" in name:
+        return True
+    if font_size > 16:
+        return False
+    if not text:
+        return False
+    try:
+        text.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return len(text) <= 18
 
 
 def load_group_boxes(
@@ -222,11 +249,15 @@ def inpaint_text_regions(
         gray = cv2.cvtColor(region, cv2.COLOR_RGB2GRAY)
         hsv = cv2.cvtColor(region, cv2.COLOR_RGB2HSV)
         sat = hsv[:, :, 1]
-
-        dark_ink = gray < 145
-        colored_ink = (sat > 30) & (gray < 235)
         local_median = float(np.median(gray)) if gray.size else 255.0
-        light_ink_on_dark = (gray > 175) & (local_median < 145)
+
+        # Text over flat colored diagram blocks is common. Avoid treating the
+        # colored block itself as "colored text"; only apply that heuristic on
+        # light backgrounds. White text on orange/blue blocks is handled by the
+        # light-on-dark rule.
+        dark_ink = gray < min(145.0, local_median - 35.0)
+        colored_ink = (local_median > 200) & (sat > 45) & (gray < 220)
+        light_ink_on_dark = (gray > max(175.0, local_median + 30.0)) & (local_median < 210)
         region_mask = dark_ink | colored_ink | light_ink_on_dark
         mask[ly1:ly2, lx1:lx2] = np.maximum(
             mask[ly1:ly2, lx1:lx2],
@@ -237,7 +268,7 @@ def inpaint_text_regions(
         return
 
     kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=1)
+    mask = cv2.dilate(mask, kernel, iterations=6)
     repaired = cv2.inpaint(rgb, mask, 3, cv2.INPAINT_TELEA)
     alpha = image.getchannel("A")
     image.paste(Image.fromarray(repaired).convert("RGBA"))

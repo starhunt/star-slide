@@ -37,6 +37,11 @@ def run(
         "--hybrid-allowed-delta",
         help="hybrid diff가 vector보다 이 값만큼 나빠도 raster 보존을 위해 hybrid 선택",
     ),
+    editable_embedded_text: bool = typer.Option(
+        True,
+        "--editable-embedded-text/--rasterize-embedded-text",
+        help="큰 이미지 그룹 내부에서 추출된 텍스트를 editable text로 유지",
+    ),
 ) -> None:
     """PPTX 업로드/배치 자동화와 같은 경로로 NotebookLM deck을 변환한다."""
     resolved_workdir = workdir or output.with_suffix("")
@@ -49,6 +54,7 @@ def run(
         llm_parallel=llm_parallel,
         use_sam3=sam3,
         hybrid_allowed_delta=hybrid_allowed_delta,
+        editable_embedded_text=editable_embedded_text,
     )
 
     t0 = time.perf_counter()

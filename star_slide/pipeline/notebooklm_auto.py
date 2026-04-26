@@ -34,6 +34,7 @@ class NotebookLmAutoOptions:
     hybrid_allowed_delta: float = 0.0
     min_objects: int = 3
     llm_parallel: int = 5
+    editable_embedded_text: bool = True
 
 
 @dataclass(frozen=True)
@@ -203,6 +204,7 @@ def build_hybrid_layouts(
     sam_dir: Path | None,
     out_dir: Path,
     slide_count: int,
+    editable_embedded_text: bool,
 ) -> None:
     cmd = [
         sys.executable,
@@ -222,8 +224,9 @@ def build_hybrid_layouts(
         "--erase-mode",
         "inpaint",
         "--drop-full-slide-grid",
-        "--rasterize-embedded-labels",
     ]
+    if not editable_embedded_text:
+        cmd.append("--rasterize-embedded-labels")
     if sam_dir is not None:
         cmd.extend(["--sam-dir", str(sam_dir)])
     run_cmd(cmd)
@@ -331,6 +334,7 @@ def convert_notebooklm_auto(
         sam_dir=sam_dir,
         out_dir=hybrid_layout_dir,
         slide_count=len(images),
+        editable_embedded_text=options.editable_embedded_text,
     )
 
     hybrid_pptx = workdir / "hybrid.pptx"
