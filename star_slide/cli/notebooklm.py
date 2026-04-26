@@ -31,7 +31,7 @@ def run(
         min=1,
         help="layout/raster group LLM 호출 병렬 수",
     ),
-    sam3: bool = typer.Option(True, "--sam3/--no-sam3"),
+    sam3: bool = typer.Option(False, "--sam3/--no-sam3"),
     hybrid_allowed_delta: float = typer.Option(
         0.0,
         "--hybrid-allowed-delta",

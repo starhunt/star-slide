@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import shutil
 import time
 import traceback
 import uuid
@@ -99,10 +101,44 @@ def create_app() -> FastAPI:
                 "llmParallel": 5,
                 "fontScale": 0.93,
                 "keepIntermediates": False,
-                "sam3": True,
+                "sam3": False,
                 "hybridAllowedDelta": 0.0,
                 "editableEmbeddedText": True,
             },
+        }
+
+    @app.get("/api/system-check")
+    def system_check() -> dict[str, Any]:
+        libreoffice = first_executable(("soffice", "libreoffice"))
+        poppler = first_executable(("pdftoppm", "pdfinfo"))
+        sam3_ready = python_module_available("torch") and python_module_available("transformers")
+        return {
+            "items": [
+                {
+                    "id": "libreoffice",
+                    "label": "LibreOffice",
+                    "ok": libreoffice is not None,
+                    "path": libreoffice,
+                    "required": True,
+                    "message": "PPTX 렌더 QA와 자동 선택에 필요합니다.",
+                },
+                {
+                    "id": "poppler",
+                    "label": "Poppler",
+                    "ok": poppler is not None,
+                    "path": poppler,
+                    "required": False,
+                    "message": "PDF 입력 또는 LibreOffice PDF 렌더 경유에 필요할 수 있습니다.",
+                },
+                {
+                    "id": "sam3",
+                    "label": "SAM3",
+                    "ok": sam3_ready,
+                    "path": "torch + transformers" if sam3_ready else None,
+                    "required": False,
+                    "message": "고품질 bbox 보정 옵션입니다. 사용하려면 gpu-segmentation extra와 SAM3 모델 접근 권한이 필요합니다.",
+                },
+            ]
         }
 
     @app.post("/api/jobs")
@@ -368,6 +404,18 @@ def public_options(options_payload: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
+def first_executable(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def python_module_available(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
 def update_job(job_id: str, **changes: Any) -> None:
     with jobs_lock:
         job = jobs[job_id]
@@ -393,7 +441,7 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             llm_parallel=int(payload.get("llmParallel") or 5),
             font_scale=float(payload.get("fontScale") or 0.93),
             keep_intermediates=bool(payload.get("keepIntermediates", False)),
-            use_sam3=bool(payload.get("sam3", True)),
+            use_sam3=bool(payload.get("sam3", False)),
             hybrid_allowed_delta=float(payload.get("hybridAllowedDelta") or 0.0),
             editable_embedded_text=bool(payload.get("editableEmbeddedText", True)),
         )
@@ -669,6 +717,36 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 12px;
       line-height: 1.5;
     }
+    .system-box {
+      display: grid;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--surface-2);
+      margin-top: 16px;
+    }
+    .system-row {
+      display: grid;
+      grid-template-columns: minmax(92px, auto) 74px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .system-name { font-weight: 750; color: var(--ink); }
+    .status-pill {
+      display: inline-flex;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-weight: 800;
+      background: color-mix(in srgb, var(--danger) 18%, var(--surface-3));
+      color: var(--danger);
+    }
+    .status-pill.ok {
+      background: color-mix(in srgb, var(--teal) 18%, var(--surface-3));
+      color: var(--teal);
+    }
     .custom-provider-fields[hidden] { display: none; }
     .provider-field-actions {
       margin-top: 10px;
@@ -870,6 +948,9 @@ INDEX_HTML = r"""<!doctype html>
       <div class="actions upload-actions">
         <button id="start">변환 시작</button>
       </div>
+      <div id="systemCheck" class="system-box">
+        <div class="hint">시스템 의존성을 확인하는 중입니다.</div>
+      </div>
 
       <div class="setting-box">
         <h2>LLM Provider</h2>
@@ -977,6 +1058,7 @@ INDEX_HTML = r"""<!doctype html>
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
     const customPrefix = "custom:";
+    const settingsVersion = 2;
 
     async function init() {
       applyTheme(localStorage.getItem(themeKey) || "dark");
@@ -990,8 +1072,32 @@ INDEX_HTML = r"""<!doctype html>
       $("start").addEventListener("click", submit);
       $("themeToggle").addEventListener("click", toggleTheme);
       setupDrop();
+      await loadSystemCheck();
       await refreshJobs();
       pollTimer = setInterval(refreshJobs, 2500);
+    }
+
+    async function loadSystemCheck() {
+      try {
+        const payload = await (await fetch("/api/system-check")).json();
+        $("systemCheck").innerHTML = renderSystemCheck(payload.items || []);
+      } catch (error) {
+        $("systemCheck").innerHTML = `<div class="hint" style="color:var(--danger);">시스템 의존성 확인 실패: ${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function renderSystemCheck(items) {
+      if (!items.length) return `<div class="hint">시스템 의존성 정보가 없습니다.</div>`;
+      return `
+        <h2 style="margin-bottom:2px;">시스템 상태</h2>
+        ${items.map(item => `
+          <div class="system-row">
+            <span class="system-name">${escapeHtml(item.label)}</span>
+            <span class="status-pill ${item.ok ? "ok" : ""}">${item.ok ? "OK" : (item.required ? "필수" : "옵션")}</span>
+            <span class="hint">${escapeHtml(item.ok ? item.path : item.message)}</span>
+          </div>
+        `).join("")}
+      `;
     }
 
     function applyTheme(theme) {
@@ -1073,6 +1179,11 @@ INDEX_HTML = r"""<!doctype html>
           item.name = "Custom Provider";
           changed = true;
         }
+      }
+      if (saved.settingsVersion !== settingsVersion) {
+        saved.options = {...(saved.options || {}), sam3: false};
+        saved.settingsVersion = settingsVersion;
+        changed = true;
       }
       return {settings: saved, changed};
     }
@@ -1171,6 +1282,7 @@ INDEX_HTML = r"""<!doctype html>
       saveCurrentProvider(saved, $("provider").value);
       saved.provider = $("provider").value;
       saved.options = currentOptionSettings();
+      saved.settingsVersion = settingsVersion;
       writeStoredSettings(saved);
       renderProviderOptions(saved.provider);
       activeProvider = saved.provider;
@@ -1185,6 +1297,7 @@ INDEX_HTML = r"""<!doctype html>
       saveCurrentProvider(saved, activeProvider);
       saved.provider = $("provider").value;
       saved.options = currentOptionSettings();
+      saved.settingsVersion = settingsVersion;
       writeStoredSettings(saved);
       activeProvider = $("provider").value;
       applyProvider(false);
@@ -1227,6 +1340,7 @@ INDEX_HTML = r"""<!doctype html>
       });
       saved.provider = `${customPrefix}${id}`;
       saved.options = currentOptionSettings();
+      saved.settingsVersion = settingsVersion;
       writeStoredSettings(saved);
       renderProviderOptions(saved.provider);
       activeProvider = saved.provider;
@@ -1241,6 +1355,7 @@ INDEX_HTML = r"""<!doctype html>
       saved.customProviders = saved.customProviders.filter(item => item.id !== customId(providerId));
       saved.provider = "local";
       saved.options = currentOptionSettings();
+      saved.settingsVersion = settingsVersion;
       writeStoredSettings(saved);
       renderProviderOptions(saved.provider);
       activeProvider = saved.provider;
@@ -1253,6 +1368,7 @@ INDEX_HTML = r"""<!doctype html>
       saveCurrentProvider(saved, $("provider").value);
       saved.provider = $("provider").value;
       saved.options = currentOptionSettings();
+      saved.settingsVersion = settingsVersion;
       writeStoredSettings(saved);
       renderProviderOptions(saved.provider);
     }

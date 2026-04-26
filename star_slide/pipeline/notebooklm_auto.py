@@ -32,7 +32,7 @@ class NotebookLmAutoOptions:
     api_key: str = ""
     timeout_sec: float = 600.0
     retries: int = 1
-    use_sam3: bool = True
+    use_sam3: bool = False
     hybrid_allowed_delta: float = 0.0
     min_objects: int = 3
     llm_parallel: int = 5
