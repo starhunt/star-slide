@@ -47,10 +47,11 @@ def is_no_color(value: Any) -> bool:
 
 
 class LayoutRenderer:
-    def __init__(self, layout: dict[str, Any], image_path: Path, workdir: Path):
+    def __init__(self, layout: dict[str, Any], image_path: Path, workdir: Path, *, font_scale: float = 1.0):
         self.layout = layout
         self.image_path = image_path
         self.workdir = workdir
+        self.font_scale = font_scale
         canvas = layout["canvas"]
         self.w_px = int(canvas["width"])
         self.h_px = int(canvas["height"])
@@ -201,7 +202,7 @@ class LayoutRenderer:
             run = p.add_run()
             run.text = line
             run.font.name = obj.get("font", DEFAULT_FONT)
-            run.font.size = Pt(float(obj.get("font_size", 18)))
+            run.font.size = Pt(max(1.0, float(obj.get("font_size", 18)) * self.font_scale))
             run.font.bold = bool(obj.get("bold", False))
             run.font.color.rgb = rgb(obj.get("color", "#000000"))
 
@@ -265,7 +266,7 @@ class LayoutRenderer:
         slide.shapes.add_picture(str(path), *self.box_to_emu(obj["bbox"]))
 
 
-def build_deck(layouts: list[dict[str, Any]], image_root: Path, out_path: Path) -> None:
+def build_deck(layouts: list[dict[str, Any]], image_root: Path, out_path: Path, *, font_scale: float = 1.0) -> None:
     if not layouts:
         raise ValueError("no layouts")
 
@@ -277,7 +278,7 @@ def build_deck(layouts: list[dict[str, Any]], image_root: Path, out_path: Path) 
     workdir = out_path.parent / f"_{out_path.stem}_assets"
     for layout in layouts:
         image_path = image_root / layout["image"]
-        LayoutRenderer(layout, image_path, workdir).render_slide(prs)
+        LayoutRenderer(layout, image_path, workdir, font_scale=font_scale).render_slide(prs)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))
@@ -295,9 +296,10 @@ def main() -> int:
     parser.add_argument("--layout", action="append", type=Path, required=True)
     parser.add_argument("--image-root", type=Path, default=Path("."))
     parser.add_argument("-o", "--output", type=Path, required=True)
+    parser.add_argument("--font-scale", type=float, default=1.0)
     args = parser.parse_args()
     layouts = load_layouts(args.layout)
-    build_deck(layouts, args.image_root, args.output)
+    build_deck(layouts, args.image_root, args.output, font_scale=args.font_scale)
     print(args.output)
     return 0
 

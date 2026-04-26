@@ -41,6 +41,15 @@ PRIMARY_TEXT_NAME_HINTS = (
     "subheading",
 )
 
+RASTER_NATIVE_TEXT_GROUP_HINTS = (
+    "equipment_specification_tag",
+    "strength_panel",
+    "weakness_panel",
+    "comparison_panel",
+    "intended_design_diagram",
+    "bug_implementation_diagram",
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -121,6 +130,18 @@ def is_notebooklm_watermark(obj: dict[str, Any]) -> bool:
     name = str(obj.get("name", "")).lower()
     text = object_text(obj).lower()
     return "notebooklm" in name or "notebooklm" in text
+
+
+def group_prefers_raster_text(group: dict[str, Any]) -> bool:
+    """Preserve text inside complex generated panels instead of repainting it.
+
+    Some NotebookLM/Nano Banana style assets are better treated as a single
+    replaceable image: spec tags, stamps, distressed panels, and similar
+    generated cards. Extracting their internal text creates inpaint artifacts
+    and often makes the result less editable in practice.
+    """
+    name = str(group.get("name", "")).lower()
+    return any(hint in name for hint in RASTER_NATIVE_TEXT_GROUP_HINTS)
 
 
 def should_keep_text(
@@ -354,16 +375,19 @@ def apply_to_layout(
             continue
 
         if obj.get("type") == "text":
-            if any(
-                should_keep_text(
+            keep_hit_indices = []
+            for idx in hit_indices:
+                if group_prefers_raster_text(groups[idx]):
+                    continue
+                if should_keep_text(
                     obj,
                     [float(v) for v in groups[idx]["bbox"]],
                     rasterize_embedded_labels=rasterize_embedded_labels,
-                )
-                for idx in hit_indices
-            ):
+                ):
+                    keep_hit_indices.append(idx)
+            if keep_hit_indices:
                 kept_objects.append(obj)
-                for idx in hit_indices:
+                for idx in keep_hit_indices:
                     text_punchouts_by_group[idx].append(box)
             else:
                 removed.append(obj)

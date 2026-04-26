@@ -84,6 +84,33 @@ def extract_embedded_images(path: Path, out_dir: Path) -> list[Path]:
     return extracted
 
 
+def extract_pdf_pages(path: Path, out_dir: Path, dpi: int = 192) -> list[Path]:
+    """PDF 각 페이지를 slide_001.png 형태로 렌더링한다.
+
+    NotebookLM PDF export는 PPTX 이미지-잠금 슬라이드와 동일하게 페이지 단위
+    원본 이미지로 취급한 뒤, 이후 layout JSON 재구성 파이프라인을 그대로 탄다.
+    """
+    try:
+        from pdf2image import convert_from_path
+        from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError
+    except ImportError as exc:  # pragma: no cover - optional runtime dependency
+        raise RuntimeError("PDF 입력에는 pdf2image 의존성이 필요합니다.") from exc
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        pages = convert_from_path(str(path), dpi=dpi)
+    except PDFInfoNotInstalledError as exc:  # pragma: no cover - depends on host tools
+        raise RuntimeError("PDF 입력에는 poppler 설치가 필요합니다. macOS에서는 `brew install poppler`를 실행하세요.") from exc
+    except PDFPageCountError as exc:  # pragma: no cover - depends on input file
+        raise RuntimeError(f"PDF 페이지 수를 읽을 수 없습니다: {path}") from exc
+    extracted: list[Path] = []
+    for i, page in enumerate(pages, start=1):
+        out_path = out_dir / f"slide_{i:03d}.png"
+        page.convert("RGB").save(out_path)
+        extracted.append(out_path)
+    return extracted
+
+
 def is_image_locked(path: Path, threshold_ratio: float = 0.9) -> bool:
     """슬라이드의 90%+ 가 이미지-잠금이면 True.
 

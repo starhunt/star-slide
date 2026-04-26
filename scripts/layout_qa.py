@@ -146,6 +146,7 @@ def run_qa(
     render_dir: Path,
     *,
     strict_editable: bool,
+    font_scale: float,
 ) -> int:
     layouts = load_layouts(layout_paths)
     errors: list[str] = []
@@ -156,7 +157,7 @@ def run_qa(
             print(f"ERROR {error}")
         return 2
 
-    build_deck(layouts, image_root, output)
+    build_deck(layouts, image_root, output, font_scale=font_scale)
     render_paths = render_pptx_to_pngs(output, render_dir)
     _make_montage(render_paths, render_dir / "montage.png")
 
@@ -196,6 +197,7 @@ def main() -> int:
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--render-dir", type=Path, required=True)
     parser.add_argument("--allow-images", action="store_true")
+    parser.add_argument("--font-scale", type=float, default=1.0)
     args = parser.parse_args()
 
     return run_qa(
@@ -204,6 +206,7 @@ def main() -> int:
         args.output,
         args.render_dir,
         strict_editable=not args.allow_images,
+        font_scale=args.font_scale,
     )
 
 

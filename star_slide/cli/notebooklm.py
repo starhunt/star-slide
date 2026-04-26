@@ -11,13 +11,13 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from star_slide.pipeline.notebooklm_auto import NotebookLmAutoOptions, convert_notebooklm_auto
 
-app = typer.Typer(help="NotebookLM 이미지 잠금 PPTX 자동 변환.", no_args_is_help=True)
+app = typer.Typer(help="NotebookLM 이미지 잠금 PPTX/PDF 자동 변환.", no_args_is_help=True)
 console = Console()
 
 
 @app.command("run")
 def run(
-    input_path: Path = typer.Argument(..., exists=True, help="NotebookLM PPTX 경로"),
+    input_path: Path = typer.Argument(..., exists=True, help="NotebookLM PPTX/PDF 경로"),
     output: Path = typer.Option(..., "-o", "--output", help="출력 PPTX 경로"),
     workdir: Path | None = typer.Option(None, "--workdir", help="중간 산출물 디렉터리"),
     base_url: str = typer.Option("http://localhost:8300/v1", "--base-url"),
@@ -42,8 +42,20 @@ def run(
         "--editable-embedded-text/--rasterize-embedded-text",
         help="큰 이미지 그룹 내부에서 추출된 텍스트를 editable text로 유지",
     ),
+    font_scale: float = typer.Option(
+        0.93,
+        "--font-scale",
+        min=0.5,
+        max=1.5,
+        help="PPTX로 렌더링할 때 적용할 전역 텍스트 크기 배율",
+    ),
+    keep_intermediates: bool = typer.Option(
+        False,
+        "--keep-intermediates/--clean-intermediates",
+        help="완료 후 QA 렌더/asset 등 큰 중간 산출물을 보존",
+    ),
 ) -> None:
-    """PPTX 업로드/배치 자동화와 같은 경로로 NotebookLM deck을 변환한다."""
+    """PPTX/PDF 업로드/배치 자동화와 같은 경로로 NotebookLM deck을 변환한다."""
     resolved_workdir = workdir or output.with_suffix("")
     options = NotebookLmAutoOptions(
         base_url=base_url,
@@ -55,6 +67,8 @@ def run(
         use_sam3=sam3,
         hybrid_allowed_delta=hybrid_allowed_delta,
         editable_embedded_text=editable_embedded_text,
+        font_scale=font_scale,
+        keep_intermediates=keep_intermediates,
     )
 
     t0 = time.perf_counter()

@@ -12,6 +12,7 @@ from star_slide import __version__
 from star_slide.cli import convert as convert_cmd
 from star_slide.cli import label as label_cmd
 from star_slide.cli import notebooklm as notebooklm_cmd
+from star_slide.cli import web as web_cmd
 
 app = typer.Typer(
     name="star-slide",
@@ -21,6 +22,7 @@ app = typer.Typer(
 )
 app.add_typer(convert_cmd.app, name="convert", help="입력 → 편집 가능 PPTX 변환.")
 app.add_typer(notebooklm_cmd.app, name="notebooklm", help="NotebookLM PPTX 자동 변환.")
+app.add_typer(web_cmd.app, name="web", help="업로드/비동기 변환 웹앱.")
 app.add_typer(label_cmd.app, name="label", help="H1 라벨링 헬퍼.")
 console = Console()
 
