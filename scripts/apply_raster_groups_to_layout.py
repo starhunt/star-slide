@@ -39,7 +39,6 @@ PRIMARY_TEXT_NAME_HINTS = (
     "info",
     "heading",
     "subheading",
-    "watermark",
 )
 
 
@@ -51,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam-dir", type=Path)
     parser.add_argument("-o", "--out-dir", required=True, type=Path)
     parser.add_argument("--slides", nargs="+", required=True, type=int)
+    parser.add_argument("--layout-template", default="sample1_slide{slide_no:02d}.layout.json")
     parser.add_argument("--punchout-padding", type=int, default=6)
     parser.add_argument("--nontext-overlap-threshold", type=float, default=0.20)
     parser.add_argument("--erase-mode", choices=["inpaint", "alpha", "none"], default="inpaint")
@@ -104,6 +104,23 @@ def object_box(obj: dict[str, Any]) -> list[float] | None:
             if xs and ys:
                 return [min(xs), min(ys), max(xs) - min(xs) or 1.0, max(ys) - min(ys) or 1.0]
     return None
+
+
+def object_text(obj: dict[str, Any]) -> str:
+    parts: list[str] = []
+    text = obj.get("text")
+    if isinstance(text, str):
+        parts.append(text)
+    lines = obj.get("lines")
+    if isinstance(lines, list):
+        parts.extend(str(line) for line in lines)
+    return " ".join(parts)
+
+
+def is_notebooklm_watermark(obj: dict[str, Any]) -> bool:
+    name = str(obj.get("name", "")).lower()
+    text = object_text(obj).lower()
+    return "notebooklm" in name or "notebooklm" in text
 
 
 def should_keep_text(
@@ -289,6 +306,9 @@ def apply_to_layout(
     removed: list[dict[str, Any]] = []
 
     for obj in layout.get("objects", []):
+        if is_notebooklm_watermark(obj):
+            removed.append(obj)
+            continue
         box = object_box(obj)
         if box is None:
             kept_objects.append(obj)
@@ -369,7 +389,7 @@ def main() -> int:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     for slide_no in args.slides:
-        layout_path = args.layout_dir / f"sample1_slide{slide_no:02d}.layout.json"
+        layout_path = args.layout_dir / args.layout_template.format(slide_no=slide_no)
         layout = apply_to_layout(
             layout_path=layout_path,
             image_root=args.image_root,

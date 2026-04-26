@@ -36,6 +36,7 @@ Core goal:
 - The JSON will be rendered into an editable PPTX.
 - Do NOT use the original slide image as a background.
 - Do NOT use image objects unless the slide contains a real photo/screenshot.
+- Do NOT include the NotebookLM watermark/logo in the bottom-right corner.
 - Prefer editable text, shape, line, and polyline objects.
 - Keep the visual design, hierarchy, text, colors, and approximate coordinates
   as close to the source image as possible.
@@ -77,7 +78,8 @@ Supported shape values: RECTANGLE, ROUNDED_RECTANGLE, OVAL, ARC, CHEVRON, CUBE,
 RIGHT_BRACE, RIGHT_ARROW.
 
 Strict rules:
-- Include every visible text when practical, including small labels and watermark.
+- Include every visible text when practical, including small labels.
+- Exclude NotebookLM watermarks/logos/brand marks even if visible.
 - If text is multi-line, use "lines" instead of embedding newline characters.
 - Korean text must be transcribed exactly.
 - Use uppercase hex colors like "#0B3558".
@@ -167,6 +169,31 @@ def _image_data_url(image_path: Path) -> str:
     media_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
     payload = base64.b64encode(image_path.read_bytes()).decode("ascii")
     return f"data:{media_type};base64,{payload}"
+
+
+def _object_text(obj: dict[str, Any]) -> str:
+    parts: list[str] = []
+    text = obj.get("text")
+    if isinstance(text, str):
+        parts.append(text)
+    lines = obj.get("lines")
+    if isinstance(lines, list):
+        parts.extend(str(line) for line in lines)
+    return " ".join(parts)
+
+
+def _drop_notebooklm_watermark(layout: dict[str, Any]) -> None:
+    objects = layout.get("objects")
+    if not isinstance(objects, list):
+        return
+    filtered = []
+    for obj in objects:
+        name = str(obj.get("name", "")).lower()
+        text = _object_text(obj).lower()
+        if "notebooklm" in name or "notebooklm" in text:
+            continue
+        filtered.append(obj)
+    layout["objects"] = filtered
 
 
 def _call_vision_proxy(
@@ -287,6 +314,7 @@ def generate_layout(
     layout.setdefault("image", image_path.name)
     layout.setdefault("canvas", {"width": image_size[0], "height": image_size[1]})
     layout.setdefault("slide_size_emu", [16_256_000, 9_144_000])
+    _drop_notebooklm_watermark(layout)
 
     errors = validate_layout(layout, strict_editable=strict_editable)
     output.parent.mkdir(parents=True, exist_ok=True)
