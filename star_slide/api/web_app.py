@@ -1447,6 +1447,128 @@ INDEX_HTML = r"""<!doctype html>
     .upload-progress { margin-top: 12px; display: grid; gap: 6px; }
     .upload-progress-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
     .upload-progress-bar > div { height: 100%; width: 0%; background: linear-gradient(90deg, var(--blue), var(--teal)); transition: width 120ms linear; }
+    .modal.viewer-modal { width: min(1200px, 96vw); max-height: 92vh; padding: 0; }
+    .modal.viewer-modal.fullscreen { width: 96vw; max-height: 96vh; }
+    .viewer {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      height: min(90vh, 880px);
+      background: var(--surface);
+    }
+    .viewer.fullscreen { height: 92vh; }
+    .viewer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-2);
+    }
+    .viewer-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .viewer-title .kind-pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: color-mix(in srgb, var(--blue) 22%, var(--surface-3));
+      color: var(--blue);
+      white-space: nowrap;
+    }
+    .viewer-title .kind-pill.original { background: color-mix(in srgb, var(--muted) 26%, var(--surface-3)); color: var(--muted); }
+    .viewer-title .filename {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .viewer-title .counter {
+      color: var(--muted);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .viewer-actions { display: flex; align-items: center; gap: 4px; }
+    .viewer-icon {
+      height: 32px;
+      width: 32px;
+      padding: 0;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 7px;
+      display: inline-grid;
+      place-items: center;
+      cursor: pointer;
+    }
+    .viewer-icon:hover { color: var(--ink); background: var(--surface-3); border-color: var(--field-border); }
+    .viewer-stage {
+      position: relative;
+      display: grid;
+      place-items: center;
+      background: #0a0e16;
+      overflow: hidden;
+    }
+    body[data-theme="light"] .viewer-stage { background: #1f2937; }
+    .viewer-stage img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      box-shadow: 0 6px 28px rgba(0, 0, 0, .35);
+      border-radius: 6px;
+      background: #fff;
+    }
+    .viewer-empty { color: var(--muted); font-size: 13px; }
+    .viewer-nav {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 0;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      background: rgba(0, 0, 0, .45);
+      color: #fff;
+    }
+    .viewer-nav:hover:not(:disabled) { background: rgba(0, 0, 0, .65); }
+    .viewer-nav:disabled { opacity: .25; cursor: not-allowed; }
+    .viewer-nav.prev { left: 12px; }
+    .viewer-nav.next { right: 12px; }
+    .viewer-foot {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 10px 14px;
+      border-top: 1px solid var(--line);
+      background: var(--surface-2);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .viewer-foot button {
+      height: 32px;
+      width: 32px;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid var(--field-border);
+      background: var(--surface-3);
+      color: var(--ink);
+      display: inline-grid;
+      place-items: center;
+      cursor: pointer;
+    }
+    .viewer-foot button:disabled { opacity: .4; cursor: not-allowed; }
     .preview-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -1765,7 +1887,7 @@ INDEX_HTML = r"""<!doctype html>
     const jobCache = new Map();
     const sseSources = new Map();
     let lastJobIds = [];
-    const compareState = { jobId: null, slides: [], index: 0, kind: "selected" };
+    const viewerState = { jobId: null, filename: "", kind: "selected", slides: [], index: 0, fullscreen: false };
 
     const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","sam3","editableEmbeddedText","keepIntermediates"];
     const settingsKey = "starSlideSettings";
@@ -1977,13 +2099,16 @@ INDEX_HTML = r"""<!doctype html>
         closeModal();
         return;
       }
-      if (compareState.slides.length === 0) return;
+      if (viewerState.slides.length === 0) return;
       if (event.key === "ArrowLeft") {
         event.preventDefault();
-        moveCompare(-1);
+        moveViewer(-1);
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
-        moveCompare(1);
+        moveViewer(1);
+      } else if (event.key === "f" || event.key === "F") {
+        event.preventDefault();
+        toggleViewerFullscreen();
       }
     }
 
@@ -2585,14 +2710,16 @@ INDEX_HTML = r"""<!doctype html>
     function jobActions(job) {
       const parts = [];
       if (job.status === "done") {
+        // 사용자 요청 순서: PPTX 다운로드 | 미리보기 | 원본보기 | 리포트 | Layout | 다시 실행
         parts.push(`<a class="button" href="/api/jobs/${job.id}/download">PPTX 다운로드</a>`);
+        parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'selected')">미리보기</button>`);
+        parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'original')">원본 보기</button>`);
         parts.push(`<button class="secondary" onclick="openReport('${job.id}')">리포트 보기</button>`);
         if (job.artifacts?.layout_json) {
-          parts.push(`<button class="secondary" onclick="openLayoutSummary('${job.id}')">Layout JSON 보기</button>`);
+          parts.push(`<button class="secondary" onclick="openLayoutSummary('${job.id}')">Layout 보기</button>`);
         }
-        parts.push(`<button class="secondary" onclick="openPreview('${job.id}')">미리보기</button>`);
       }
-      if (job.status === "running" || job.status === "queued") {
+      if (job.status === "running" || job.status === "queued" || job.status === "cancelling") {
         parts.push(`<button class="secondary" onclick="cancelJob('${job.id}')">취소</button>`);
       }
       if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
@@ -2602,22 +2729,36 @@ INDEX_HTML = r"""<!doctype html>
       return `<div class="job-actions">${parts.join("")}</div>`;
     }
 
+    function isJobActive(status) {
+      return status === "running" || status === "queued" || status === "cancelling";
+    }
+
     function renderJob(job) {
       const pct = Math.max(0, Math.min(100, job.progress || 0));
       const error = job.error ? `<div class="hint job-error" style="color:var(--danger);">${escapeHtml(job.error)}</div>` : "";
+      const active = isJobActive(job.status);
+      // 진행 중에만 진행률 바와 phase/percent 표시. 완료/실패/취소된 카드는 메타와 액션만 보여 군더더기를 줄인다.
+      const progressBlock = active
+        ? `
+            <div class="hint job-phase">${escapeHtml(job.phase || "")}</div>
+            <div class="bar"><div style="width:${pct}%"></div></div>
+            <div class="job-meta">
+              <span class="metric job-percent">${Math.round(pct)}%</span>
+              <span class="metric">${new Date(job.created_at * 1000).toLocaleString()}</span>
+              <span class="metric">${escapeHtml(job.options?.model || "")}</span>
+            </div>`
+        : `
+            <div class="job-meta">
+              <span class="metric">${new Date(job.created_at * 1000).toLocaleString()}</span>
+              ${job.options?.model ? `<span class="metric">${escapeHtml(job.options.model)}</span>` : ""}
+            </div>`;
       return `
-        <section class="job" data-job-id="${job.id}">
+        <section class="job" data-job-id="${job.id}" data-status="${job.status}">
           <div class="job-head">
             <div class="job-title">${escapeHtml(job.filename)}</div>
             <span class="badge ${job.status}">${statusLabel(job.status)}</span>
           </div>
-          <div class="hint job-phase">${escapeHtml(job.phase || "")}</div>
-          <div class="bar"><div style="width:${pct}%"></div></div>
-          <div class="job-meta">
-            <span class="metric job-percent">${Math.round(pct)}%</span>
-            <span class="metric">${new Date(job.created_at * 1000).toLocaleString()}</span>
-            <span class="metric">${escapeHtml(job.options?.model || "")}</span>
-          </div>
+          ${progressBlock}
           ${error}
           ${jobActions(job)}
         </section>
@@ -2627,6 +2768,15 @@ INDEX_HTML = r"""<!doctype html>
     function updateJobCard(job) {
       const card = document.querySelector(`section.job[data-job-id="${job.id}"]`);
       if (!card) return;
+      // status 전환(active ↔ terminal)이 발생하면 progress 블록 모양 자체가 바뀌므로 통째로 다시 그린다.
+      const prevStatus = card.dataset.status;
+      const wasActive = isJobActive(prevStatus);
+      const isActive = isJobActive(job.status);
+      if (wasActive !== isActive) {
+        card.outerHTML = renderJob(job);
+        return;
+      }
+      card.dataset.status = job.status;
       const pct = Math.max(0, Math.min(100, job.progress || 0));
       const badge = card.querySelector(".badge");
       if (badge) {
@@ -2725,7 +2875,11 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
-    function openModal(title, html) {
+    function openModal(title, html, options) {
+      const modal = document.querySelector("#modalBackdrop .modal");
+      const head = modal.querySelector(".modal-head");
+      modal.classList.toggle("viewer-modal", Boolean(options?.viewer));
+      head.style.display = options?.hideHeader ? "none" : "";
       $("modalTitle").textContent = title;
       $("modalBody").innerHTML = html;
       $("modalBackdrop").classList.add("open");
@@ -2734,104 +2888,123 @@ INDEX_HTML = r"""<!doctype html>
 
     function closeModal(event) {
       if (event && event.target !== $("modalBackdrop")) return;
+      const modal = document.querySelector("#modalBackdrop .modal");
       $("modalBackdrop").classList.remove("open");
       $("modalBackdrop").setAttribute("aria-hidden", "true");
       $("modalBody").innerHTML = "";
-      compareState.jobId = null;
-      compareState.slides = [];
-      compareState.index = 0;
+      modal.classList.remove("viewer-modal");
+      modal.querySelector(".modal-head").style.display = "";
+      viewerState.jobId = null;
+      viewerState.slides = [];
+      viewerState.index = 0;
+      viewerState.fullscreen = false;
     }
 
-    async function openPreview(jobId) {
-      openModal("슬라이드 미리보기", `<div class="empty">미리보기를 불러오는 중입니다.</div>`);
-      try {
-        const response = await fetch(`/api/jobs/${jobId}/previews`);
-        if (response.status === 404) {
-          $("modalBody").innerHTML = `<img class="preview" src="/api/jobs/${jobId}/montage?ts=${Date.now()}" alt="montage" />`;
-          return;
-        }
-        if (!response.ok) throw new Error(await response.text());
-        const data = await response.json();
-        if (!data.slides || !data.slides.length) {
-          $("modalBody").innerHTML = `<img class="preview" src="/api/jobs/${jobId}/montage?ts=${Date.now()}" alt="montage" />`;
-          return;
-        }
-        compareState.jobId = jobId;
-        compareState.slides = data.slides;
-        compareState.index = 0;
-        compareState.kind = data.slides[0].kinds.includes("selected") ? "selected" : data.slides[0].kinds[0];
-        $("modalBody").innerHTML = renderPreviewGrid(jobId, data);
-      } catch (error) {
-        $("modalBody").innerHTML = `<div class="empty" style="color:var(--danger);">미리보기 실패: ${escapeHtml(error.message)}</div>`;
+    const ICON_PREV = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>`;
+    const ICON_NEXT = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`;
+    const ICON_FULLSCREEN = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`;
+    const ICON_MINIMIZE = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>`;
+    const ICON_DOWNLOAD = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
+    const ICON_CLOSE = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+
+    function kindLabel(kind) {
+      switch (kind) {
+        case "original": return "원본";
+        case "selected": return "변환 결과";
+        case "vector": return "Vector";
+        case "hybrid": return "Hybrid";
+        default: return kind;
       }
     }
 
-    function renderPreviewGrid(jobId, data) {
-      const cards = data.slides.map((slide, i) => {
-        const kind = slide.kinds.includes("selected") ? "selected" : slide.kinds[0];
-        return `
-          <div class="preview-card" onclick="openCompare(${i})">
-            <img loading="lazy" src="/api/jobs/${jobId}/previews/${slide.slide_no}/${kind}" alt="slide ${slide.slide_no}" />
-            <div class="meta"><span>슬라이드 ${slide.slide_no}</span><span>${slide.kinds.length} 종</span></div>
-          </div>
-        `;
-      }).join("");
-      return `
-        <div class="hint">총 ${data.slides.length}장 · 카드를 클릭하면 원본/Vector/Hybrid 비교가 열립니다.</div>
-        <div class="preview-grid">${cards}</div>
-      `;
+    async function openSlideViewer(jobId, kind) {
+      const job = jobCache.get(jobId);
+      const filename = job?.filename || "";
+      // 우선 모달을 띄우고 로딩 표시. 데이터 도착 후 본문 교체.
+      openModal("", `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">슬라이드 목록을 불러오는 중...</div></div></div>`, { viewer: true, hideHeader: true });
+      try {
+        const response = await fetch(`/api/jobs/${jobId}/previews`);
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        const slides = (data.slides || []).filter(s => Array.isArray(s.kinds) && s.kinds.includes(kind));
+        if (slides.length === 0) {
+          $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">'${kindLabel(kind)}' 미리보기 이미지가 없습니다. (이전 작업이라 산출물이 없을 수 있습니다.)</div></div></div>`;
+          return;
+        }
+        viewerState.jobId = jobId;
+        viewerState.filename = filename;
+        viewerState.kind = kind;
+        viewerState.slides = slides;
+        viewerState.index = 0;
+        viewerState.fullscreen = false;
+        renderViewer();
+      } catch (error) {
+        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">미리보기 실패: ${escapeHtml(error.message)}</div></div></div>`;
+      }
     }
 
-    function openCompare(index) {
-      compareState.index = index;
-      $("modalBody").innerHTML = renderCompare();
-    }
-
-    function moveCompare(delta) {
-      const next = compareState.index + delta;
-      if (next < 0 || next >= compareState.slides.length) return;
-      compareState.index = next;
-      $("modalBody").innerHTML = renderCompare();
-    }
-
-    function setCompareKind(kind) {
-      compareState.kind = kind;
-      $("modalBody").innerHTML = renderCompare();
-    }
-
-    function renderCompare() {
-      const slide = compareState.slides[compareState.index];
-      if (!slide) return `<div class="empty">슬라이드를 찾을 수 없습니다.</div>`;
-      const jobId = compareState.jobId;
-      const availableRight = ["selected", "vector", "hybrid"].filter(k => slide.kinds.includes(k));
-      if (!availableRight.includes(compareState.kind)) compareState.kind = availableRight[0] || "selected";
-      const leftKind = slide.kinds.includes("original") ? "original" : slide.kinds[0];
-      const rightKind = compareState.kind;
-      const toggles = availableRight.map(k => `<button class="${k === rightKind ? "active" : ""}" onclick="setCompareKind('${k}')">${k}</button>`).join("");
-      return `
-        <div class="compare">
-          <div class="compare-toolbar">
-            <button class="secondary" onclick="moveCompare(-1)" ${compareState.index === 0 ? "disabled" : ""}>← 이전</button>
-            <span class="hint">슬라이드 ${slide.slide_no} · ${compareState.index + 1}/${compareState.slides.length}</span>
-            <button class="secondary" onclick="moveCompare(1)" ${compareState.index === compareState.slides.length - 1 ? "disabled" : ""}>다음 →</button>
-            <span class="spacer"></span>
-            <span class="hint">우측 비교 대상</span>
-            <span class="kind-toggle">${toggles}</span>
-            <button class="secondary" onclick="openPreview('${jobId}')">그리드로</button>
-          </div>
-          <div class="compare-pair">
-            <div class="compare-pane">
-              <span class="label">원본 (${leftKind})</span>
-              <img src="/api/jobs/${jobId}/previews/${slide.slide_no}/${leftKind}" alt="left ${slide.slide_no}" />
+    function renderViewer() {
+      const slide = viewerState.slides[viewerState.index];
+      if (!slide) return;
+      const jobId = viewerState.jobId;
+      const kind = viewerState.kind;
+      const total = viewerState.slides.length;
+      const idx = viewerState.index;
+      const imgUrl = `/api/jobs/${jobId}/previews/${slide.slide_no}/${kind}`;
+      const fullscreenIcon = viewerState.fullscreen ? ICON_MINIMIZE : ICON_FULLSCREEN;
+      const fullscreenTitle = viewerState.fullscreen ? "축소 (F)" : "전체화면 (F)";
+      const modal = document.querySelector("#modalBackdrop .modal");
+      modal.classList.toggle("fullscreen", viewerState.fullscreen);
+      $("modalBody").innerHTML = `
+        <div class="viewer ${viewerState.fullscreen ? "fullscreen" : ""}">
+          <div class="viewer-head">
+            <div class="viewer-title">
+              <span class="kind-pill ${kind}">${escapeHtml(kindLabel(kind))}</span>
+              <span class="filename" title="${escapeHtml(viewerState.filename)}">${escapeHtml(viewerState.filename)}</span>
+              <span class="counter">${idx + 1} / ${total}</span>
             </div>
-            <div class="compare-pane">
-              <span class="label">변환 (${rightKind})</span>
-              <img src="/api/jobs/${jobId}/previews/${slide.slide_no}/${rightKind}" alt="right ${slide.slide_no}" />
+            <div class="viewer-actions">
+              <button class="viewer-icon" onclick="downloadCurrentSlide()" title="이 슬라이드 이미지 다운로드">${ICON_DOWNLOAD}</button>
+              <button class="viewer-icon" onclick="toggleViewerFullscreen()" title="${fullscreenTitle}">${fullscreenIcon}</button>
+              <button class="viewer-icon" onclick="closeModal()" title="닫기 (Esc)">${ICON_CLOSE}</button>
             </div>
           </div>
-          <div class="hint">키보드: ← / → 슬라이드 이동, ESC 닫기</div>
+          <div class="viewer-stage">
+            <button class="viewer-nav prev" onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
+            <img src="${imgUrl}" alt="슬라이드 ${slide.slide_no}" />
+            <button class="viewer-nav next" onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>
+          </div>
+          <div class="viewer-foot">
+            <button onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
+            <span>슬라이드 ${slide.slide_no} · ${idx + 1} / ${total}</span>
+            <button onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>
+          </div>
         </div>
       `;
+    }
+
+    function moveViewer(delta) {
+      const next = viewerState.index + delta;
+      if (next < 0 || next >= viewerState.slides.length) return;
+      viewerState.index = next;
+      renderViewer();
+    }
+
+    function toggleViewerFullscreen() {
+      viewerState.fullscreen = !viewerState.fullscreen;
+      renderViewer();
+    }
+
+    function downloadCurrentSlide() {
+      const slide = viewerState.slides[viewerState.index];
+      if (!slide) return;
+      const url = `/api/jobs/${viewerState.jobId}/previews/${slide.slide_no}/${viewerState.kind}`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${viewerState.filename || "slide"}_${slide.slide_no}_${viewerState.kind}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     }
 
     async function openReport(jobId) {
