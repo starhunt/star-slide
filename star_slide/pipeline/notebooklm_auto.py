@@ -141,7 +141,7 @@ def layout_text_stats(path: Path) -> dict[str, int]:
         count += 1
         chars += text_len
         font_size = float(obj.get("font_size") or 0)
-        if font_size >= 16 or text_len >= 8:
+        if font_size >= 16 or (font_size >= 12 and text_len >= 20):
             primary_count += 1
             primary_chars += text_len
     return {

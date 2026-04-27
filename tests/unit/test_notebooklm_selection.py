@@ -20,3 +20,10 @@ def test_ignores_sparse_text_slides() -> None:
     hybrid = {"count": 1, "chars": 30, "primary_count": 1, "primary_chars": 30}
 
     assert not has_significant_text_loss(vector, hybrid)
+
+
+def test_ignores_non_primary_thumbnail_labels() -> None:
+    vector = {"count": 10, "chars": 283, "primary_count": 7, "primary_chars": 238}
+    hybrid = {"count": 7, "chars": 238, "primary_count": 7, "primary_chars": 238}
+
+    assert not has_significant_text_loss(vector, hybrid)
