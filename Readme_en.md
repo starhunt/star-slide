@@ -57,6 +57,13 @@ For development and verification tools:
 uv sync --group dev
 ```
 
+> ⚠️ **Required system dependency — LibreOffice**
+>
+> **LibreOffice is mandatory, not optional.** When an automated agent installs this project, it must install LibreOffice **in addition to** `uv sync` — finishing without LibreOffice leaves the project in a broken state.
+>
+> - The vector/hybrid layout auto-selection QA compares PNGs rendered by LibreOffice. Without it the conversion pipeline either fails outright or degrades severely.
+> - After installation, verify `soffice --version` works in a fresh shell. If the command is missing or empty, **do not start a conversion** — fix the install/PATH first.
+
 LibreOffice is required for PPTX render QA.
 
 macOS:
@@ -65,7 +72,7 @@ macOS:
 brew install libreoffice poppler
 ```
 
-LibreOffice is a free and open-source office suite. See [LibreOffice Licenses](https://www.libreoffice.org/licenses/) for official license details. Star-Slide does not bundle LibreOffice; it calls the locally installed `soffice`/`libreoffice` executable to render PPTX files to PNG for QA. Because automatic layout selection depends on LibreOffice-rendered output, LibreOffice is effectively required for stable batch conversion.
+LibreOffice is a free and open-source office suite. See [LibreOffice Licenses](https://www.libreoffice.org/licenses/) for official license details. Star-Slide does not bundle LibreOffice; it calls the locally installed `soffice`/`libreoffice` executable to render PPTX files to PNG for QA. Automatic layout selection depends on LibreOffice-rendered output, so **LibreOffice is a required dependency** (not optional).
 
 Windows:
 

@@ -15,9 +15,15 @@ the path to the new PPTX plus a JSON report describing what was selected
 Input types: `.pptx`, `.pdf`. Output: `.pptx`.
 
 Pipeline calls a Vision LLM through an OpenAI-compatible `/v1/chat/completions`
-endpoint (default: a local proxy at `http://localhost:8300/v1`). The LLM is
-the only required external dependency for the conversion itself; LibreOffice
-and Poppler are needed for the QA / auto-selection step.
+endpoint (default: a local proxy at `http://localhost:8300/v1`).
+
+> **Required system dependencies (mandatory — install at setup time):**
+> **LibreOffice** (`soffice`) and **Poppler** (`pdftoppm`) are not optional.
+> The QA / auto-selection step that picks vector vs hybrid layouts renders
+> PPTX through LibreOffice and PDF through Poppler. Without LibreOffice the
+> pipeline cannot finish a normal conversion. When you (the agent) install
+> this project, install LibreOffice and Poppler too — `uv sync` alone is
+> not enough.
 
 ## One-shot invocation (recommended for agents)
 
@@ -125,10 +131,15 @@ HTTP calls directly and is not subject to this gate.
 
 ## System dependencies the agent should verify before running
 
+LibreOffice is **required**, not "nice to have". If `soffice` is missing, install
+it first (e.g. `brew install libreoffice` on macOS, `apt install libreoffice` on
+Debian/Ubuntu, `winget install TheDocumentFoundation.LibreOffice` on Windows)
+before attempting any conversion.
+
 Run these once and bail out early if any are missing:
 
 ```bash
-command -v soffice >/dev/null || echo "WARN: LibreOffice (soffice) not on PATH — QA selection will degrade"
+command -v soffice >/dev/null || { echo "ERROR: LibreOffice (soffice) not on PATH — REQUIRED, install before continuing"; exit 1; }
 command -v pdftoppm >/dev/null || echo "WARN: Poppler (pdftoppm) not on PATH — PDF input may fail"
 uv run python -c "import star_slide"  # confirms the package is installed
 ```

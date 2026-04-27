@@ -57,6 +57,13 @@ uv sync --extra api
 uv sync --group dev
 ```
 
+> ⚠️ **필수 시스템 의존성 — LibreOffice**
+>
+> **LibreOffice는 선택 사항이 아니라 필수 모듈입니다.** 자동/AI 에이전트가 이 프로젝트를 설치할 때는 `uv sync`만으로 끝내지 말고 **반드시 LibreOffice도 함께 설치**해야 합니다.
+>
+> - vector/hybrid layout 자동 선택 QA가 LibreOffice가 렌더링한 PNG를 비교해 동작합니다. LibreOffice가 없으면 변환 파이프라인이 실패하거나 품질이 크게 저하됩니다.
+> - 설치 후 새 셸에서 `soffice --version`이 정상 출력되는지 검증하세요. 출력이 없거나 명령을 찾을 수 없다면 **변환을 시작하지 말고** 설치/PATH를 먼저 고치세요.
+
 PPTX 렌더 QA에는 LibreOffice가 필요합니다.
 
 macOS:
@@ -65,7 +72,7 @@ macOS:
 brew install libreoffice poppler
 ```
 
-LibreOffice는 무료 오픈소스 오피스 제품군입니다. 공식 라이선스 안내는 [LibreOffice Licenses](https://www.libreoffice.org/licenses/)를 참고하세요. Star-Slide는 LibreOffice를 번들로 재배포하지 않고 로컬/서버에 설치된 실행 파일을 호출해 PPTX를 PNG로 렌더링합니다. 현재 자동 선택 QA가 LibreOffice 렌더 결과를 사용하므로, 안정적인 배치 변환에는 LibreOffice 설치가 사실상 필수입니다.
+LibreOffice는 무료 오픈소스 오피스 제품군입니다. 공식 라이선스 안내는 [LibreOffice Licenses](https://www.libreoffice.org/licenses/)를 참고하세요. Star-Slide는 LibreOffice를 번들로 재배포하지 않고 로컬/서버에 설치된 실행 파일을 호출해 PPTX를 PNG로 렌더링합니다. 자동 선택 QA가 LibreOffice 렌더 결과를 직접 사용하므로 **LibreOffice 설치는 필수입니다** (선택 옵션 아님).
 
 Windows:
 
