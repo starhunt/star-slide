@@ -200,14 +200,10 @@ def create_app() -> FastAPI:
     async def submit_job(request: Request) -> JSONResponse:
         filename = request.query_params.get("filename", "upload.pptx")
         safe_name = Path(filename).name
+        if not safe_name or safe_name in {".", ".."}:
+            raise HTTPException(status_code=400, detail="파일명이 올바르지 않습니다.")
         if Path(safe_name).suffix.lower() not in ALLOWED_SUFFIXES:
             raise HTTPException(status_code=400, detail="PPTX/PDF 파일만 업로드할 수 있습니다.")
-
-        body = await request.body()
-        if not body:
-            raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
-        if len(body) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="업로드 파일이 너무 큽니다.")
 
         raw_options = request.headers.get("x-star-slide-options", "{}")
         try:
@@ -219,7 +215,28 @@ def create_app() -> FastAPI:
         job_dir = WEB_ROOT / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
         input_path = job_dir / safe_name
-        input_path.write_bytes(body)
+
+        # 스트리밍 업로드: 청크 단위로 디스크에 직접 기록하고 누적 크기를 검사한다.
+        # 한도 초과 시 부분 파일을 즉시 정리해 디스크 누수를 막는다.
+        total = 0
+        with input_path.open("wb") as fh:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    fh.close()
+                    with contextlib.suppress(OSError):
+                        input_path.unlink()
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"업로드 파일이 너무 큽니다 (한도 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB).",
+                    )
+                fh.write(chunk)
+        if total == 0:
+            with contextlib.suppress(OSError):
+                input_path.unlink()
+            raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
 
         state = JobState(
             id=job_id,
@@ -336,7 +353,8 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/api/jobs/{job_id}/cancel")
-    def cancel(job_id: str) -> JSONResponse:
+    def cancel(request: Request, job_id: str) -> JSONResponse:
+        require_json_content_type(request)
         job = require_job(job_id)
         if job.status in TERMINAL_STATUSES:
             return JSONResponse(job_snapshot(job))
@@ -351,7 +369,8 @@ def create_app() -> FastAPI:
         return JSONResponse(job_snapshot(require_job(job_id)))
 
     @app.post("/api/jobs/{job_id}/rerun")
-    def rerun(job_id: str) -> JSONResponse:
+    def rerun(request: Request, job_id: str) -> JSONResponse:
+        require_json_content_type(request)
         job = require_job(job_id)
         if job.status not in TERMINAL_STATUSES:
             raise HTTPException(status_code=409, detail="진행 중인 작업은 다시 실행할 수 없습니다.")
@@ -603,11 +622,18 @@ def python_module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
 
-def update_job(job_id: str, **changes: Any) -> None:
+def update_job(job_id: str, *, force: bool = False, **changes: Any) -> None:
     with jobs_lock:
         job = jobs.get(job_id)
         if job is None:
             return
+        # terminal-state guard: cancel/done/failed 후 도착하는 late progress가
+        # status를 비-terminal로 되돌리지 못하도록 차단한다. force=True (run_job 자체
+        # 종료 분기)일 때는 통과.
+        if not force and job.status in TERMINAL_STATUSES:
+            new_status = changes.get("status", job.status)
+            if new_status not in TERMINAL_STATUSES:
+                return
         for key, value in changes.items():
             setattr(job, key, value)
         job.updated_at = time.time()
@@ -660,6 +686,7 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             generate_previews(workdir=workdir, out_dir=previews_dir)
         update_job(
             job_id,
+            force=True,
             status="done",
             phase="완료",
             progress=100,
@@ -668,11 +695,67 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             montage=str(result.montage) if result.montage else None,
         )
     except JobCancelledError:
-        update_job(job_id, status="cancelled", phase="취소됨", progress=100, error=None)
+        update_job(job_id, force=True, status="cancelled", phase="취소됨", progress=100, error=None)
     except Exception as exc:  # pragma: no cover - depends on external tools/model
         error_path = job_dir / "error.log"
         error_path.write_text(sanitize_error(traceback.format_exc()), encoding="utf-8")
-        update_job(job_id, status="failed", phase="실패", error=sanitize_error(str(exc)), progress=100)
+        update_job(job_id, force=True, status="failed", phase="실패", error=sanitize_error(str(exc)), progress=100)
+
+
+_LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _validate_outbound_url(url: str) -> tuple[bool, str]:
+    """SSRF guard for user-supplied OpenAI-compatible base URLs.
+
+    Allows http/https only. Hostnames that resolve to private/loopback/link-local/
+    multicast/reserved IPs are rejected, with an explicit allowlist for the
+    literal loopback hostnames (localhost / 127.0.0.1 / ::1) so local proxies
+    such as Ollama still work.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False, "http 또는 https URL만 허용됩니다."
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "URL에 호스트가 없습니다."
+    if hostname in _LOOPBACK_HOSTNAMES:
+        return True, ""
+    try:
+        infos = socket.getaddrinfo(hostname, parsed.port or 80, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False, f"호스트 '{hostname}'를 해석할 수 없습니다."
+    # is_reserved는 NAT64 prefix(64:ff9b::/96) 등 정상 외부 트래픽도 포함하므로
+    # 제외하고, 명백히 SSRF 위험이 있는 분류만 차단한다.
+    for _family, _socktype, _proto, _canon, sockaddr in infos:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except (ValueError, IndexError):
+            continue
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+            return False, f"내부/사설 네트워크 주소({ip})는 허용되지 않습니다."
+    return True, ""
+
+
+def require_json_content_type(request: Request) -> None:
+    """Reject requests without an application/json Content-Type.
+
+    This forces a CORS preflight on cross-origin browser callers, which the
+    default same-origin policy then blocks. Trivial CSRF defense for the
+    state-mutating POST endpoints (cancel/rerun) that otherwise accept empty
+    bodies.
+    """
+    raw = request.headers.get("content-type", "")
+    media_type = raw.split(";", 1)[0].strip().lower()
+    if media_type != "application/json":
+        raise HTTPException(
+            status_code=415,
+            detail="Content-Type: application/json 필요 (CSRF 방지).",
+        )
 
 
 def probe_llm_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
@@ -692,6 +775,10 @@ def probe_llm_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "Base URL을 입력하세요."}
     if not model:
         return {"ok": False, "error": "Model 이름을 입력하세요."}
+
+    ok, err = _validate_outbound_url(base_url)
+    if not ok:
+        return {"ok": False, "error": err}
 
     first = _probe_chat_completions(base_url, model, api_key, timeout)
     if first.get("ok"):
@@ -725,18 +812,21 @@ def probe_llm_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
 def _looks_like_model_missing(result: dict[str, Any]) -> bool:
     if result.get("ok"):
         return False
-    error_text = str(result.get("error", "")).lower()
-    return "not found" in error_text or "does not exist" in error_text or "no such model" in error_text
+    return bool(result.get("model_missing"))
 
 
 def _list_models(base_url: str, api_key: str, timeout: float) -> list[str]:
     import httpx
 
+    ok, _ = _validate_outbound_url(base_url)
+    if not ok:
+        return []
+
     headers: dict[str, str] = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
-        with httpx.Client(timeout=min(timeout, 8.0), follow_redirects=True) as client:
+        with httpx.Client(timeout=min(timeout, 8.0), follow_redirects=False) as client:
             response = client.get(f"{base_url}/models", headers=headers)
         if response.status_code >= 400:
             return []
@@ -775,7 +865,7 @@ def _probe_chat_completions(
 
     started = time.perf_counter()
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False) as client:
             response = client.post(url, json=body, headers=headers)
     except httpx.TimeoutException:
         return {
@@ -791,8 +881,18 @@ def _probe_chat_completions(
         }
     latency_ms = int((time.perf_counter() - started) * 1000)
 
+    if 300 <= response.status_code < 400:
+        # SSRF 회피: 리다이렉트는 허용하지 않음 (내부 메타데이터/사설망 우회 차단).
+        return {
+            "ok": False,
+            "status_code": response.status_code,
+            "latency_ms": latency_ms,
+            "error": f"HTTP {response.status_code}: 리다이렉트는 보안상 허용되지 않습니다.",
+        }
+
     if response.status_code >= 400:
-        snippet = response.text[:300]
+        # 응답 본문은 반사하지 않음 (외부 endpoint가 내부 정보/시크릿을 에코할 수 있음).
+        # status code + 일반 hint만 클라이언트에 전달.
         hint = ""
         if response.status_code in (401, 403):
             hint = " (API key 또는 권한을 확인하세요)"
@@ -800,12 +900,19 @@ def _probe_chat_completions(
             hint = " (Base URL 또는 모델명을 확인하세요)"
         elif response.status_code == 429:
             hint = " (rate limit 초과 또는 quota 부족)"
-        return {
+        # 내부 판별: model not found 안내를 자동으로 추가하기 위해 본문 일부를 검사.
+        # 본문은 응답에 포함하지 않고 model_missing 플래그만 기록한다.
+        result: dict[str, Any] = {
             "ok": False,
             "status_code": response.status_code,
             "latency_ms": latency_ms,
-            "error": f"HTTP {response.status_code}{hint}: {sanitize_error(snippet)}",
+            "error": f"HTTP {response.status_code}{hint}",
         }
+        if response.status_code == 404:
+            body_lower = response.text[:500].lower()
+            if "not found" in body_lower or "no such model" in body_lower or "does not exist" in body_lower:
+                result["model_missing"] = True
+        return result
 
     try:
         data = response.json()
@@ -839,6 +946,10 @@ def sanitize_error(message: str) -> str:
     message = re.sub(r"sk-[A-Za-z0-9_-]+", "sk-********", message)
     message = re.sub(r"(--api-key['\", ]+)([^'\",\\]]+)", r"\1********", message)
     message = re.sub(r"(apiKey['\": ]+)([^'\",\\]]+)", r"\1********", message)
+    # Bearer / Google API key / URL-embedded basic auth credentials
+    message = re.sub(r"Bearer\s+\S+", "Bearer ********", message, flags=re.IGNORECASE)
+    message = re.sub(r"AIza[0-9A-Za-z_\-]{35}", "AIza********", message)
+    message = re.sub(r"(https?://)([^/@\s]+):([^/@\s]+)@", r"\1********:********@", message)
     return message
 
 
@@ -1266,6 +1377,14 @@ INDEX_HTML = r"""<!doctype html>
     .badge.done { background: color-mix(in srgb, var(--teal) 18%, var(--surface-3)); color: var(--teal); }
     .badge.failed { background: color-mix(in srgb, var(--danger) 18%, var(--surface-3)); color: var(--danger); }
     .badge.cancelled, .badge.cancelling { background: color-mix(in srgb, var(--muted) 22%, var(--surface-3)); color: var(--muted); }
+    .keystore-banner {
+      padding: 10px 28px;
+      font-size: 13px;
+      font-weight: 600;
+      background: color-mix(in srgb, var(--danger) 18%, var(--surface));
+      color: var(--danger);
+      border-bottom: 1px solid color-mix(in srgb, var(--danger) 40%, var(--line));
+    }
     .api-key-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -1488,6 +1607,7 @@ INDEX_HTML = r"""<!doctype html>
       <button id="themeToggle" class="secondary theme-toggle" type="button">라이트 모드</button>
     </div>
   </header>
+  <div id="keystoreBanner" class="keystore-banner" hidden role="alert"></div>
   <div class="shell">
     <aside>
       <h2>파일 업로드</h2>
@@ -1637,6 +1757,9 @@ INDEX_HTML = r"""<!doctype html>
     const KEYSTORE_KEY_NAME = "apiKeyMaster.v1";
     let _cryptoKeyPromise = null;
     let _settingsCache = null;
+    // 진단: 한번이라도 decrypt가 실패했는가? true면 export(저장)를 막아서
+    // 빈 값으로 ciphertext가 덮어써지는 데이터 손실을 차단한다.
+    let _decryptFailed = false;
 
     function openKeystore() {
       return new Promise((resolve, reject) => {
@@ -1711,7 +1834,8 @@ INDEX_HTML = r"""<!doctype html>
         return new TextDecoder().decode(plain);
       } catch (err) {
         console.warn("API key 복호화 실패 (키 회전 또는 저장소 손상)", err);
-        return "";
+        _decryptFailed = true;
+        return null;  // 센티넬: 호출자는 ciphertext를 그대로 보존해야 한다
       }
     }
 
@@ -1722,16 +1846,24 @@ INDEX_HTML = r"""<!doctype html>
       raw.providers = raw.providers || {};
       for (const id of Object.keys(raw.providers)) {
         const p = raw.providers[id];
-        if (p && typeof p === "object") {
-          if (p.apiKeyEnc) p.apiKey = await decryptApiKey(p.apiKeyEnc);
-          else if (typeof p.apiKey !== "string") p.apiKey = "";
+        if (!p || typeof p !== "object") continue;
+        if (p.apiKeyEnc) {
+          const plain = await decryptApiKey(p.apiKeyEnc);
+          // null = decrypt 실패. apiKey는 미설정으로 두고 ciphertext는 보존한다.
+          if (plain !== null) p.apiKey = plain;
+        } else if (typeof p.apiKey !== "string") {
+          p.apiKey = "";
         }
       }
       raw.customProviders = Array.isArray(raw.customProviders) ? raw.customProviders : [];
       for (const p of raw.customProviders) {
         if (!p || typeof p !== "object") continue;
-        if (p.apiKeyEnc) p.apiKey = await decryptApiKey(p.apiKeyEnc);
-        else if (typeof p.apiKey !== "string") p.apiKey = "";
+        if (p.apiKeyEnc) {
+          const plain = await decryptApiKey(p.apiKeyEnc);
+          if (plain !== null) p.apiKey = plain;
+        } else if (typeof p.apiKey !== "string") {
+          p.apiKey = "";
+        }
       }
       return raw;
     }
@@ -1741,19 +1873,32 @@ INDEX_HTML = r"""<!doctype html>
       out.providers = out.providers || {};
       for (const id of Object.keys(out.providers)) {
         const p = out.providers[id];
-        if (p && typeof p === "object") {
-          p.apiKeyEnc = await encryptApiKey(p.apiKey || "");
-          delete p.apiKey;
+        if (!p || typeof p !== "object") continue;
+        // apiKey가 명시적 string이면 그것만 암호화. undefined(=decrypt 실패로 미설정)
+        // 면 기존 apiKeyEnc를 그대로 두어 사용자의 ciphertext를 보존한다.
+        if (typeof p.apiKey === "string") {
+          p.apiKeyEnc = await encryptApiKey(p.apiKey);
         }
+        delete p.apiKey;
       }
       out.customProviders = Array.isArray(out.customProviders) ? out.customProviders : [];
       for (const p of out.customProviders) {
         if (!p || typeof p !== "object") continue;
-        p.apiKeyEnc = await encryptApiKey(p.apiKey || "");
+        if (typeof p.apiKey === "string") {
+          p.apiKeyEnc = await encryptApiKey(p.apiKey);
+        }
         delete p.apiKey;
       }
       out.settingsVersion = settingsVersion;
       localStorage.setItem(settingsKey, JSON.stringify(out));
+    }
+
+    function setKeystoreBanner(message) {
+      const el = $("keystoreBanner");
+      if (!el) return;
+      if (!message) { el.hidden = true; el.textContent = ""; return; }
+      el.hidden = false;
+      el.textContent = message;
     }
 
     function hasLegacyPlaintextKey() {
@@ -1777,8 +1922,14 @@ INDEX_HTML = r"""<!doctype html>
       presets = await (await fetch("/api/presets")).json();
       const needsMigration = hasLegacyPlaintextKey();
       _settingsCache = await importSettingsFromStorage();
-      if (needsMigration) {
+      // decrypt 실패가 한 번이라도 있었다면 자동 마이그레이션을 건너뛴다 (export가
+      // ciphertext를 빈값으로 덮어쓸 위험 차단). 사용자가 명시적으로 키를 다시 입력해
+      // save하면 그때 정상 export 된다.
+      if (needsMigration && !_decryptFailed) {
         try { await exportSettingsToStorage(_settingsCache); } catch (err) { console.warn("API key 마이그레이션 실패", err); }
+      }
+      if (_decryptFailed) {
+        setKeystoreBanner("⚠ 저장된 API 키를 복호화할 수 없습니다 (브라우저 keystore 손상 또는 시크릿 모드). 기존 ciphertext는 보존되었으니 사용 중인 다른 브라우저에서 확인하거나, 새 키를 입력 후 저장하세요.");
       }
       loadSettings();
       $("provider").addEventListener("change", changeProvider);
@@ -2523,7 +2674,11 @@ INDEX_HTML = r"""<!doctype html>
     async function cancelJob(jobId) {
       if (!confirm("이 작업을 취소하시겠습니까? 진행 단계가 끝난 직후 중단됩니다.")) return;
       try {
-        const response = await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+        const response = await fetch(`/api/jobs/${jobId}/cancel`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: "{}",
+        });
         if (!response.ok) throw new Error(await response.text());
         const snap = await response.json();
         jobCache.set(snap.id, snap);
@@ -2535,7 +2690,11 @@ INDEX_HTML = r"""<!doctype html>
 
     async function rerunJob(jobId) {
       try {
-        const response = await fetch(`/api/jobs/${jobId}/rerun`, { method: "POST" });
+        const response = await fetch(`/api/jobs/${jobId}/rerun`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: "{}",
+        });
         if (!response.ok) throw new Error(await response.text());
         currentPage = 1;
         await refreshJobs();

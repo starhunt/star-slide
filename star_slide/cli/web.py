@@ -12,6 +12,7 @@ app = typer.Typer(help="로컬 웹앱 실행.", no_args_is_help=True)
 console = Console()
 
 WEB_PORT = 5400
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 @app.command("run")
@@ -37,6 +38,11 @@ def run(
 
     web_app.WEB_ROOT = jobs_dir
     jobs_dir.mkdir(parents=True, exist_ok=True)
+    if host not in LOOPBACK_HOSTS:
+        console.print(
+            f"[yellow]⚠ 비-loopback host '{host}'에 바인딩합니다. "
+            "이 웹앱은 인증이 없으니 신뢰된 네트워크에서만 사용하세요.[/]"
+        )
     console.print(f"[bold]Star-Slide 웹앱[/bold] http://{host}:{WEB_PORT}")
     target = "star_slide.api.web_app:app" if reload else web_app.app
     uvicorn.run(target, host=host, port=WEB_PORT, reload=reload)
