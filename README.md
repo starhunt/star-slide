@@ -144,6 +144,27 @@ output/.../work/qa_selected/montage.png
 output/.../work/qa_selected/qa_report.json
 ```
 
+## AI 에이전트에서 사용 (Claude Code, Codex CLI 등)
+
+CLI는 비대화형 + JSON 출력 + 환경변수를 지원해 코딩 에이전트에서 곧바로 호출할 수 있습니다.
+
+```bash
+STAR_SLIDE_API_KEY=sk-... \
+STAR_SLIDE_BASE_URL=https://api.openai.com/v1 \
+STAR_SLIDE_MODEL=gpt-4.1 \
+uv run star-slide notebooklm run input.pptx -o out.pptx --quiet --json
+```
+
+- `--quiet`: 진행 표시 끄기 (TTY 없는 환경)
+- `--json`: 완료 시 결과 메타데이터를 stdout에 한 줄 JSON으로 출력
+- exit code: 성공 `0`, 실패 `1`
+
+지원 환경변수: `STAR_SLIDE_API_KEY` (alias `VISION_PROXY_API_KEY`),
+`STAR_SLIDE_BASE_URL`, `STAR_SLIDE_MODEL`, `STAR_SLIDE_TIMEOUT`,
+`STAR_SLIDE_RETRIES`, `STAR_SLIDE_LLM_PARALLEL`, `STAR_SLIDE_SAM3`.
+
+자세한 에이전트 사용 가이드는 [AGENTS.md](AGENTS.md)를 참고하세요.
+
 ## 웹앱 실행
 
 CLI와 같은 변환 파이프라인을 웹에서 사용할 수 있습니다. 현재 웹앱은 로컬 MVP이며, 업로드한 파일과 산출물은 `output/web_jobs/` 아래에 저장됩니다.

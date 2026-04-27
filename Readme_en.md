@@ -144,6 +144,30 @@ output/.../work/qa_selected/montage.png
 output/.../work/qa_selected/qa_report.json
 ```
 
+## Using from AI agents (Claude Code, Codex CLI, ...)
+
+The CLI is non-interactive, exposes a JSON output mode, and reads the same
+options from environment variables, so coding agents can invoke it directly.
+
+```bash
+STAR_SLIDE_API_KEY=sk-... \
+STAR_SLIDE_BASE_URL=https://api.openai.com/v1 \
+STAR_SLIDE_MODEL=gpt-4.1 \
+uv run star-slide notebooklm run input.pptx -o out.pptx --quiet --json
+```
+
+- `--quiet`: suppress the progress UI (no TTY required)
+- `--json`: print the result metadata as a single-line JSON object to stdout
+- exit code: `0` on success, `1` on failure
+
+Supported environment variables: `STAR_SLIDE_API_KEY` (alias
+`VISION_PROXY_API_KEY`), `STAR_SLIDE_BASE_URL`, `STAR_SLIDE_MODEL`,
+`STAR_SLIDE_TIMEOUT`, `STAR_SLIDE_RETRIES`, `STAR_SLIDE_LLM_PARALLEL`,
+`STAR_SLIDE_SAM3`.
+
+See [AGENTS.md](AGENTS.md) for the full agent guide (output schema, common
+patterns, anti-patterns).
+
 ## Web App
 
 The web app runs the same conversion pipeline as the CLI. It is currently a local MVP. Uploaded files and outputs are stored under `output/web_jobs/`.

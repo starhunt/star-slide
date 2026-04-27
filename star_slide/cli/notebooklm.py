@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import time
+from contextlib import nullcontext
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -20,18 +23,27 @@ def run(
     input_path: Path = typer.Argument(..., exists=True, help="NotebookLM PPTX/PDF 경로"),
     output: Path = typer.Option(..., "-o", "--output", help="출력 PPTX 경로"),
     workdir: Path | None = typer.Option(None, "--workdir", help="중간 산출물 디렉터리"),
-    base_url: str = typer.Option("http://localhost:8300/v1", "--base-url"),
-    model: str = typer.Option("gpt-5.5", "--model"),
-    api_key: str = typer.Option("", "--api-key"),
-    timeout: float = typer.Option(600.0, "--timeout"),
-    retries: int = typer.Option(1, "--retries"),
+    base_url: str = typer.Option(
+        "http://localhost:8300/v1",
+        "--base-url",
+        envvar="STAR_SLIDE_BASE_URL",
+    ),
+    model: str = typer.Option("gpt-5.5", "--model", envvar="STAR_SLIDE_MODEL"),
+    api_key: str = typer.Option(
+        "",
+        "--api-key",
+        envvar=["STAR_SLIDE_API_KEY", "VISION_PROXY_API_KEY"],
+    ),
+    timeout: float = typer.Option(600.0, "--timeout", envvar="STAR_SLIDE_TIMEOUT"),
+    retries: int = typer.Option(1, "--retries", envvar="STAR_SLIDE_RETRIES"),
     llm_parallel: int = typer.Option(
         5,
         "--llm-parallel",
         min=1,
+        envvar="STAR_SLIDE_LLM_PARALLEL",
         help="layout/raster group LLM 호출 병렬 수",
     ),
-    sam3: bool = typer.Option(False, "--sam3/--no-sam3"),
+    sam3: bool = typer.Option(False, "--sam3/--no-sam3", envvar="STAR_SLIDE_SAM3"),
     hybrid_allowed_delta: float = typer.Option(
         0.0,
         "--hybrid-allowed-delta",
@@ -54,8 +66,27 @@ def run(
         "--keep-intermediates/--clean-intermediates",
         help="완료 후 QA 렌더/asset 등 큰 중간 산출물을 보존",
     ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="진행 표시와 안내 메시지를 모두 끈다 (CI/agent 환경에 적합).",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="완료 시 결과 메타데이터를 stdout에 JSON으로 출력 (에이전트 친화).",
+    ),
 ) -> None:
-    """PPTX/PDF 업로드/배치 자동화와 같은 경로로 NotebookLM deck을 변환한다."""
+    """PPTX/PDF 업로드/배치 자동화와 같은 경로로 NotebookLM deck을 변환한다.
+
+    환경변수 (CLI 옵션이 있으면 우선):
+      STAR_SLIDE_API_KEY (alias: VISION_PROXY_API_KEY), STAR_SLIDE_BASE_URL,
+      STAR_SLIDE_MODEL, STAR_SLIDE_TIMEOUT, STAR_SLIDE_RETRIES,
+      STAR_SLIDE_LLM_PARALLEL, STAR_SLIDE_SAM3.
+
+    Exit code: 성공 0, 실패 1. --json 모드에서도 동일.
+    """
     resolved_workdir = workdir or output.with_suffix("")
     options = NotebookLmAutoOptions(
         base_url=base_url,
@@ -71,15 +102,22 @@ def run(
         keep_intermediates=keep_intermediates,
     )
 
+    show_progress = not (quiet or json_output)
+
     t0 = time.perf_counter()
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold]{task.description}"),
-        TimeElapsedColumn(),
-        console=console,
-        transient=False,
-    ) as progress:
-        task = progress.add_task("NotebookLM 자동 변환 중...", total=None)
+    progress_ctx: Any = (
+        Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]{task.description}"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False,
+        )
+        if show_progress
+        else nullcontext()
+    )
+    with progress_ctx as progress:
+        task_id = progress.add_task("NotebookLM 자동 변환 중...", total=None) if show_progress else None
         try:
             result = convert_notebooklm_auto(
                 input_path=input_path,
@@ -88,12 +126,37 @@ def run(
                 options=options,
             )
         except Exception as exc:
-            progress.stop()
-            console.print(f"[red]변환 실패:[/] {exc}")
+            if show_progress:
+                progress.stop()
+            if json_output:
+                typer.echo(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            elif not quiet:
+                console.print(f"[red]변환 실패:[/] {exc}")
             raise typer.Exit(1) from exc
-        progress.update(task, description="완료")
+        if show_progress and task_id is not None:
+            progress.update(task_id, description="완료")
 
     elapsed = time.perf_counter() - t0
+
+    if json_output:
+        payload = {
+            "ok": True,
+            "elapsed_sec": round(elapsed, 2),
+            "output": str(result.output),
+            "workdir": str(result.workdir),
+            "report": str(result.report),
+            "vector_pptx": str(result.vector_pptx),
+            "hybrid_pptx": str(result.hybrid_pptx),
+            "artifact_dir": str(result.artifact_dir),
+            "montage": str(result.montage) if result.montage else None,
+            "selected_layout_dir": str(result.selected_layout_dir),
+        }
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+        return
+
+    if quiet:
+        return
+
     console.print()
     console.print(f"[bold green]✓ NotebookLM 자동 변환 완료[/] ({elapsed:.1f}초)")
     console.print(f"  PPTX:   {result.output}")
