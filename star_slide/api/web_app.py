@@ -1637,6 +1637,62 @@ INDEX_HTML = r"""<!doctype html>
       border-radius: 6px;
       background: #fff;
     }
+    .viewer-stage.compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 12px 60px;
+      align-items: center;
+      justify-items: center;
+    }
+    .viewer-stage.compare .compare-pane {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 6px;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      align-items: stretch;
+    }
+    .viewer-stage.compare .compare-pane .pane-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #cbd5e1;
+      text-align: center;
+    }
+    .viewer-stage.compare .compare-pane .pane-label.result { color: #93c5fd; }
+    .viewer-stage.compare .compare-pane .pane-img-wrap {
+      display: grid;
+      place-items: center;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .viewer-stage.compare .compare-pane img,
+    .viewer-stage.compare .compare-pane .missing {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .viewer-stage.compare .compare-pane .missing {
+      display: grid;
+      place-items: center;
+      width: 100%;
+      height: 100%;
+      color: var(--muted);
+      font-size: 12px;
+      border: 1px dashed color-mix(in srgb, var(--muted) 40%, transparent);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, .03);
+    }
+    @media (max-width: 900px) {
+      .viewer-stage.compare {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr 1fr;
+        padding: 12px 50px;
+      }
+    }
     .viewer-empty { color: var(--muted); font-size: 13px; }
     .viewer-nav {
       position: absolute;
@@ -1998,7 +2054,7 @@ INDEX_HTML = r"""<!doctype html>
     const jobCache = new Map();
     const sseSources = new Map();
     let lastJobIds = [];
-    const viewerState = { jobId: null, filename: "", kind: "selected", slides: [], index: 0, fullscreen: false };
+    const viewerState = { jobId: null, filename: "", kind: "selected", slides: [], index: 0, fullscreen: false, resultPages: 0, originalPages: 0 };
 
     const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","sam3","editableEmbeddedText","keepIntermediates"];
     const settingsKey = "starSlideSettings";
@@ -2821,10 +2877,11 @@ INDEX_HTML = r"""<!doctype html>
     function jobActions(job) {
       const parts = [];
       if (job.status === "done") {
-        // 사용자 요청 순서: PPTX 다운로드 | 미리보기 | 원본보기 | 리포트 | Layout | 다시 실행
+        // 사용자 요청 순서: PPTX 다운로드 | 미리보기 | 원본보기 | 비교 | 리포트 | Layout | 다시 실행
         parts.push(`<a class="button" href="/api/jobs/${job.id}/download">PPTX 다운로드</a>`);
         parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'result')">미리보기</button>`);
         parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'original')">원본 보기</button>`);
+        parts.push(`<button class="secondary" onclick="openCompareViewer('${job.id}')">${ICON_COMPARE_INLINE} 비교 보기</button>`);
         parts.push(`<button class="secondary" onclick="openReport('${job.id}')">리포트 보기</button>`);
         if (job.artifacts?.layout_json) {
           parts.push(`<button class="secondary" onclick="openLayoutSummary('${job.id}')">Layout 보기</button>`);
@@ -3011,6 +3068,7 @@ INDEX_HTML = r"""<!doctype html>
       viewerState.fullscreen = false;
     }
 
+    const ICON_COMPARE_INLINE = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><rect x="3" y="5" width="7" height="14" rx="1"/><rect x="14" y="5" width="7" height="14" rx="1"/></svg>`;
     const ICON_PREV = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>`;
     const ICON_NEXT = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`;
     const ICON_FULLSCREEN = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`;
@@ -3025,7 +3083,44 @@ INDEX_HTML = r"""<!doctype html>
         case "selected": return "변환 결과";
         case "vector": return "Vector";
         case "hybrid": return "Hybrid";
+        case "compare": return "비교";
         default: return kind;
+      }
+    }
+
+    async function openCompareViewer(jobId) {
+      const job = jobCache.get(jobId);
+      const filename = job?.filename || "";
+      openModal("", `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">원본 + 변환 결과를 동시에 변환 중입니다... (캐시되어 있으면 즉시 표시됩니다)</div></div></div>`, { viewer: true, hideHeader: true });
+      try {
+        const [resultRes, origRes] = await Promise.all([
+          fetch(`/api/jobs/${jobId}/pptx-pages?which=result`),
+          fetch(`/api/jobs/${jobId}/pptx-pages?which=original`),
+        ]);
+        if (!resultRes.ok) throw new Error(`변환 결과: ${await resultRes.text() || resultRes.status}`);
+        if (!origRes.ok) throw new Error(`원본: ${await origRes.text() || origRes.status}`);
+        const resultData = await resultRes.json();
+        const origData = await origRes.json();
+        const resultPages = Number(resultData.pages || 0);
+        const originalPages = Number(origData.pages || 0);
+        const total = Math.max(resultPages, originalPages);
+        if (total <= 0) {
+          $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">표시할 슬라이드가 없습니다.</div></div></div>`;
+          return;
+        }
+        const pages = [];
+        for (let i = 1; i <= total; i++) pages.push({ page_no: i });
+        viewerState.jobId = jobId;
+        viewerState.filename = filename;
+        viewerState.kind = "compare";
+        viewerState.slides = pages;
+        viewerState.index = 0;
+        viewerState.fullscreen = false;
+        viewerState.resultPages = resultPages;
+        viewerState.originalPages = originalPages;
+        renderViewer();
+      } catch (error) {
+        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">비교 보기 실패: ${escapeHtml(error.message || error)}</div></div></div>`;
       }
     }
 
@@ -3068,29 +3163,65 @@ INDEX_HTML = r"""<!doctype html>
       const total = viewerState.slides.length;
       const idx = viewerState.index;
       const pageNo = slide.page_no || (idx + 1);
-      const imgUrl = `/api/jobs/${jobId}/pptx-pages/${pageNo}?which=${encodeURIComponent(kind)}`;
       const fullscreenIcon = viewerState.fullscreen ? ICON_MINIMIZE : ICON_FULLSCREEN;
       const fullscreenTitle = viewerState.fullscreen ? "축소 (F)" : "전체화면 (F)";
       const modal = document.querySelector("#modalBackdrop .modal");
       modal.classList.toggle("fullscreen", viewerState.fullscreen);
+
+      const isCompare = kind === "compare";
+      const stageClass = isCompare ? "viewer-stage compare" : "viewer-stage";
+
+      let stageInner;
+      if (isCompare) {
+        const origPaneInner = pageNo <= viewerState.originalPages
+          ? `<img src="/api/jobs/${jobId}/pptx-pages/${pageNo}?which=original" alt="원본 ${pageNo}" />`
+          : `<div class="missing">원본에 ${pageNo}번 슬라이드가 없습니다</div>`;
+        const resultPaneInner = pageNo <= viewerState.resultPages
+          ? `<img src="/api/jobs/${jobId}/pptx-pages/${pageNo}?which=result" alt="변환 ${pageNo}" />`
+          : `<div class="missing">변환 결과에 ${pageNo}번 슬라이드가 없습니다</div>`;
+        stageInner = `
+          <button class="viewer-nav prev" onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
+          <div class="compare-pane">
+            <div class="pane-label">원본</div>
+            <div class="pane-img-wrap">${origPaneInner}</div>
+          </div>
+          <div class="compare-pane">
+            <div class="pane-label result">변환 결과</div>
+            <div class="pane-img-wrap">${resultPaneInner}</div>
+          </div>
+          <button class="viewer-nav next" onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>`;
+      } else {
+        const imgUrl = `/api/jobs/${jobId}/pptx-pages/${pageNo}?which=${encodeURIComponent(kind)}`;
+        stageInner = `
+          <button class="viewer-nav prev" onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
+          <img src="${imgUrl}" alt="슬라이드 ${pageNo}" />
+          <button class="viewer-nav next" onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>`;
+      }
+
+      const titleBlock = isCompare
+        ? `<span class="kind-pill original">원본</span><span class="kind-pill">변환 결과</span>`
+        : `<span class="kind-pill ${kind}">${escapeHtml(kindLabel(kind))}</span>`;
+      // 비교 모드는 두 장을 동시에 받기 어색하므로 다운로드 버튼은 숨긴다.
+      const downloadBtn = isCompare
+        ? ""
+        : `<button class="viewer-icon" onclick="downloadCurrentSlide()" title="이 슬라이드 이미지 다운로드">${ICON_DOWNLOAD}</button>`;
+
       $("modalBody").innerHTML = `
         <div class="viewer ${viewerState.fullscreen ? "fullscreen" : ""}">
           <div class="viewer-head">
             <div class="viewer-title">
-              <span class="kind-pill ${kind}">${escapeHtml(kindLabel(kind))}</span>
+              ${titleBlock}
               <span class="filename" title="${escapeHtml(viewerState.filename)}">${escapeHtml(viewerState.filename)}</span>
               <span class="counter">${idx + 1} / ${total}</span>
             </div>
             <div class="viewer-actions">
-              <button class="viewer-icon" onclick="downloadCurrentSlide()" title="이 슬라이드 이미지 다운로드">${ICON_DOWNLOAD}</button>
+              ${downloadBtn}
               <button class="viewer-icon" onclick="toggleViewerFullscreen()" title="${fullscreenTitle}">${fullscreenIcon}</button>
               <button class="viewer-icon" onclick="closeModal()" title="닫기 (Esc)">${ICON_CLOSE}</button>
             </div>
           </div>
-          <div class="viewer-stage">
-            <button class="viewer-nav prev" onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
-            <img src="${imgUrl}" alt="슬라이드 ${pageNo}" />
-            <button class="viewer-nav next" onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>
+          <div class="${stageClass}">
+            ${stageInner}
           </div>
           <div class="viewer-foot">
             <button onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
