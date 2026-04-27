@@ -392,7 +392,7 @@ def create_app() -> FastAPI:
     @app.post("/api/jobs/delete")
     def delete_jobs_bulk(
         request: Request,
-        payload: dict[str, Any] = Body(default_factory=dict),
+        payload: dict[str, Any] = Body(default_factory=dict),  # noqa: B008
     ) -> JSONResponse:
         require_json_content_type(request)
         ids = payload.get("ids") or []
@@ -1440,7 +1440,7 @@ INDEX_HTML = r"""<!doctype html>
     header {
       height: 68px;
       display: grid;
-      grid-template-columns: minmax(220px, auto) minmax(0, 1fr) minmax(160px, 240px);
+      grid-template-columns: minmax(220px, auto) minmax(0, 1fr) minmax(280px, auto);
       align-items: center;
       padding: 0 28px;
       border-bottom: 1px solid var(--line);
@@ -2232,25 +2232,26 @@ INDEX_HTML = r"""<!doctype html>
 <body>
   <header>
     <div class="brand"><span class="brand-mark" aria-hidden="true">S</span><span>Star-Slide</span></div>
-    <div class="tagline">NotebookLM에서 생성한 이미지 슬라이드를 <strong>편집 가능한 PPTX</strong>로 변환</div>
+    <div class="tagline" data-i18n-html="tagline">NotebookLM에서 생성한 이미지 슬라이드를 <strong>편집 가능한 PPTX</strong>로 변환</div>
     <div class="header-actions">
-      <button id="settingsButton" class="secondary theme-toggle" type="button" title="설정">⚙ 설정</button>
+      <button id="languageToggle" class="secondary theme-toggle" type="button" title="Language">EN</button>
+      <button id="settingsButton" class="secondary theme-toggle" type="button" title="설정" data-i18n="settings.button" data-i18n-title="settings.title">⚙ 설정</button>
       <button id="themeToggle" class="secondary theme-toggle" type="button">라이트 모드</button>
     </div>
   </header>
   <div id="keystoreBanner" class="keystore-banner" hidden role="alert"></div>
   <div class="shell">
     <aside>
-      <h2>파일 업로드</h2>
+      <h2 data-i18n="upload.title">파일 업로드</h2>
       <div id="drop" class="drop">
         <div>
-          <strong>PPTX/PDF를 드래그하거나 클릭</strong>
-          <span id="fileLabel" class="hint">NotebookLM에서 내려받은 .pptx 또는 .pdf 파일</span>
+          <strong data-i18n="upload.drop">PPTX/PDF를 드래그하거나 클릭</strong>
+          <span id="fileLabel" class="hint" data-i18n="upload.fileHint">NotebookLM에서 내려받은 .pptx 또는 .pdf 파일</span>
         </div>
       </div>
       <input id="file" type="file" accept=".pptx,.pdf" hidden />
       <div class="actions upload-actions">
-        <button id="start">변환 시작</button>
+        <button id="start" data-i18n="upload.start">변환 시작</button>
       </div>
       <div id="uploadProgress" class="upload-progress" hidden>
         <div class="upload-progress-bar"><div></div></div>
@@ -2258,7 +2259,7 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div class="setting-box">
         <h2>LLM Provider</h2>
-        <div class="info-box">
+        <div class="info-box" data-i18n-html="provider.info">
           LLM은 슬라이드 이미지를 layout JSON으로 해석하고 큰 이미지 영역을 판단하는 데 사용됩니다.
           기본 흐름은 슬라이드당 약 2회 호출이며, retry 설정에 따라 추가 호출될 수 있습니다.
         </div>
@@ -2269,16 +2270,16 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div>
             <label for="s_model">Model</label>
-            <input id="s_model" list="modelOptions" placeholder="gpt-5.5 (로컬은 자동 조회)" autocomplete="off" />
+            <input id="s_model" list="modelOptions" placeholder="gpt-5.5 (로컬은 자동 조회)" data-i18n-placeholder="model.placeholder" autocomplete="off" />
           </div>
         </div>
-        <div class="hint" style="margin-top:6px;">
+        <div class="hint" style="margin-top:6px;" data-i18n-html="provider.sidebarHint">
           Base URL · API Key · Custom Provider 관리 · 시스템 상태는 우측 상단 <strong>⚙ 설정</strong>에서.
         </div>
       </div>
 
       <div class="setting-box">
-        <h2>변환 옵션</h2>
+        <h2 data-i18n="options.title">변환 옵션</h2>
         <div class="row">
           <div>
             <label for="s_timeout">Timeout</label>
@@ -2287,7 +2288,7 @@ INDEX_HTML = r"""<!doctype html>
           <div>
             <div class="label-row">
               <label for="s_retries">Retries</label>
-              <span class="help" title="layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수입니다. 기본 2회이며, 네트워크/LLM 일시 실패를 흡수합니다.">?</span>
+              <span class="help" title="layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수입니다. 기본 2회이며, 네트워크/LLM 일시 실패를 흡수합니다." data-i18n-title="help.retries">?</span>
             </div>
             <input id="s_retries" type="number" min="0" step="1" />
           </div>
@@ -2295,15 +2296,15 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row">
           <div>
             <div class="label-row">
-              <label for="s_llmParallel">LLM 병렬 수</label>
-              <span class="help" title="여러 슬라이드의 LLM 분석 요청을 동시에 몇 개까지 실행할지 정합니다.">?</span>
+              <label for="s_llmParallel" data-i18n="options.llmParallel">LLM 병렬 수</label>
+              <span class="help" title="여러 슬라이드의 LLM 분석 요청을 동시에 몇 개까지 실행할지 정합니다." data-i18n-title="help.llmParallel">?</span>
             </div>
             <input id="s_llmParallel" type="number" min="1" max="10" step="1" />
           </div>
           <div>
             <div class="label-row">
-              <label for="s_fontScale">폰트 배율</label>
-              <span class="help" title="PPTX로 다시 렌더링할 때 모든 편집 가능 텍스트 크기에 곱하는 값입니다.">?</span>
+              <label for="s_fontScale" data-i18n="options.fontScale">폰트 배율</label>
+              <span class="help" title="PPTX로 다시 렌더링할 때 모든 편집 가능 텍스트 크기에 곱하는 값입니다." data-i18n-title="help.fontScale">?</span>
             </div>
             <input id="s_fontScale" type="number" min="0.5" max="1.5" step="0.01" />
           </div>
@@ -2311,8 +2312,8 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row">
           <div>
             <div class="label-row">
-              <label for="s_hybridAllowedDelta">Hybrid 허용 diff</label>
-              <span class="help" title="원본 대비 픽셀 차이(diff)가 vector보다 이 값만큼 더 나빠도 hybrid를 선택합니다.">?</span>
+              <label for="s_hybridAllowedDelta" data-i18n="options.hybridAllowedDelta">Hybrid 허용 diff</label>
+              <span class="help" title="원본 대비 픽셀 차이(diff)가 vector보다 이 값만큼 더 나빠도 hybrid를 선택합니다." data-i18n-title="help.hybridAllowedDelta">?</span>
             </div>
             <input id="s_hybridAllowedDelta" type="number" step="0.1" />
           </div>
@@ -2320,38 +2321,38 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div>
           <div class="label-row">
-            <label for="s_layoutFailureMode">Layout 실패 처리</label>
-            <span class="help" title="재시도 후에도 layout JSON이 생성되지 않은 슬라이드 처리 방식.">?</span>
+            <label for="s_layoutFailureMode" data-i18n="options.layoutFailureMode">Layout 실패 처리</label>
+            <span class="help" title="재시도 후에도 layout JSON이 생성되지 않은 슬라이드 처리 방식." data-i18n-title="help.layoutFailureMode">?</span>
           </div>
           <select id="s_layoutFailureMode">
-            <option value="image_fallback">이미지 폴백으로 계속</option>
-            <option value="fail">작업 실패로 중단</option>
+            <option value="image_fallback" data-i18n="options.imageFallback">이미지 폴백으로 계속</option>
+            <option value="fail" data-i18n="options.failStop">작업 실패로 중단</option>
           </select>
         </div>
         <label class="checkline"><input id="s_sam3" type="checkbox" /> SAM3 bbox refinement</label>
-        <label class="checkline"><input id="s_editableEmbeddedText" type="checkbox" /> 큰 이미지 내부 텍스트 편집 가능 유지</label>
-        <label class="checkline"><input id="s_keepIntermediates" type="checkbox" /> 큰 중간 산출물 보존</label>
+        <label class="checkline"><input id="s_editableEmbeddedText" type="checkbox" /> <span data-i18n="options.editableEmbeddedText">큰 이미지 내부 텍스트 편집 가능 유지</span></label>
+        <label class="checkline"><input id="s_keepIntermediates" type="checkbox" /> <span data-i18n="options.keepIntermediates">큰 중간 산출물 보존</span></label>
         <div>
           <div class="label-row">
-            <label for="s_watermarkMode">워터마크만 제거 모드</label>
-            <span class="help" title="LLM/SAM 변환을 생략하고 입력 슬라이드 이미지 우측 하단의 NotebookLM 워터마크만 제거합니다. 텍스트 편집은 불가합니다.&#10;빠름: 가장자리 평균색으로 단순 페인트 (수초).&#10;디테일: LaMa 인페인팅으로 배경을 자연스럽게 복원 (슬라이드당 1~3초, 첫 호출 시 모델 다운로드).">?</span>
+            <label for="s_watermarkMode" data-i18n="options.watermarkMode">워터마크만 제거 모드</label>
+            <span class="help" title="LLM/SAM 변환을 생략하고 입력 슬라이드 이미지 우측 하단의 NotebookLM 워터마크만 제거합니다. 텍스트 편집은 불가합니다.&#10;빠름: 가장자리 평균색으로 단순 페인트 (수초).&#10;디테일: LaMa 인페인팅으로 배경을 자연스럽게 복원 (슬라이드당 1~3초, 첫 호출 시 모델 다운로드)." data-i18n-title="help.watermarkMode">?</span>
           </div>
           <select id="s_watermarkMode">
-            <option value="off">사용 안 함 (워터마크제거포함 전체변환)</option>
-            <option value="fast">빠름 — 단순 페인트</option>
-            <option value="detail">디테일 — LaMa 인페인팅</option>
+            <option value="off" data-i18n="options.watermarkOff">사용 안 함 (워터마크제거포함 전체변환)</option>
+            <option value="fast" data-i18n="options.watermarkFast">빠름 — 단순 페인트</option>
+            <option value="detail" data-i18n="options.watermarkDetail">디테일 — LaMa 인페인팅</option>
           </select>
         </div>
       </div>
 
-      <div class="hint" style="margin-top:14px;">
+      <div class="hint" style="margin-top:14px;" data-i18n-html="sidebar.sessionHint">
         ⓘ 사이드바 변경은 이 세션에만 적용됩니다. 영구 저장은 우측 상단 <strong>⚙ 설정</strong>.
       </div>
     </aside>
     <main>
-      <h1 style="font-size:22px;margin-bottom:16px;">작업 상태</h1>
+      <h1 style="font-size:22px;margin-bottom:16px;" data-i18n="jobs.title">작업 상태</h1>
       <div id="jobs" class="jobs">
-        <div class="empty">아직 실행한 작업이 없습니다.</div>
+        <div class="empty" data-i18n="jobs.empty">아직 실행한 작업이 없습니다.</div>
       </div>
     </main>
   </div>
@@ -2359,7 +2360,7 @@ INDEX_HTML = r"""<!doctype html>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
       <div class="modal-head">
         <h2 id="modalTitle">상세</h2>
-        <button class="secondary" onclick="closeModal()" aria-label="모달 닫기">닫기</button>
+        <button class="secondary" onclick="closeModal()" aria-label="모달 닫기" data-i18n="common.close" data-i18n-aria-label="modal.closeAria">닫기</button>
       </div>
       <div id="modalBody" class="modal-body"></div>
     </div>
@@ -2376,13 +2377,13 @@ INDEX_HTML = r"""<!doctype html>
   <div id="advancedSettingsHost" hidden>
     <div class="setting-box settings-tab-pane" data-tab="system" style="border-top:0;margin-top:0;padding-top:0;">
       <div id="systemCheck" class="system-box">
-        <div class="hint">시스템 의존성을 확인하는 중입니다.</div>
+        <div class="hint" data-i18n="system.checking">시스템 의존성을 확인하는 중입니다.</div>
       </div>
     </div>
 
     <div class="setting-box settings-tab-pane" data-tab="provider" style="border-top:0;margin-top:0;padding-top:0;">
       <h2>LLM Provider</h2>
-      <div class="info-box">
+      <div class="info-box" data-i18n-html="provider.info">
         LLM은 슬라이드 이미지를 layout JSON으로 해석하고 큰 이미지 영역을 판단하는 데 사용됩니다.
         기본 흐름은 슬라이드당 약 2회 호출이며, retry 설정에 따라 추가 호출될 수 있습니다.
       </div>
@@ -2391,21 +2392,21 @@ INDEX_HTML = r"""<!doctype html>
           <label for="provider">Provider</label>
           <select id="provider"></select>
         </div>
-        <button id="addCustom" class="secondary" type="button">Custom 추가</button>
+        <button id="addCustom" class="secondary" type="button" data-i18n="provider.addCustom">Custom 추가</button>
       </div>
       <div id="customProviderFields" class="custom-provider-fields" hidden>
         <label for="customName">Custom Name</label>
-        <input id="customName" placeholder="예: 사내 프록시" />
+        <input id="customName" placeholder="예: 사내 프록시" data-i18n-placeholder="provider.customNamePlaceholder" />
         <div class="actions provider-field-actions">
-          <button id="deleteCustom" class="secondary" type="button">Custom 삭제</button>
+          <button id="deleteCustom" class="secondary" type="button" data-i18n="provider.deleteCustom">Custom 삭제</button>
         </div>
       </div>
       <label for="baseUrl">Base URL</label>
       <input id="baseUrl" placeholder="http://localhost:8300/v1" />
       <label for="model">Model</label>
       <div class="api-key-row">
-        <input id="model" list="modelOptions" placeholder="gpt-5.5 (로컬은 자동 조회)" autocomplete="off" />
-        <button id="refreshModels" class="secondary" type="button" title="사용 가능한 모델 목록 다시 가져오기">↻ 모델</button>
+        <input id="model" list="modelOptions" placeholder="gpt-5.5 (로컬은 자동 조회)" data-i18n-placeholder="model.placeholder" autocomplete="off" />
+        <button id="refreshModels" class="secondary" type="button" title="사용 가능한 모델 목록 다시 가져오기" data-i18n="provider.refreshModels" data-i18n-title="model.refreshTitle">↻ 모델</button>
       </div>
       <datalist id="modelOptions"></datalist>
       <div id="modelChips" class="model-chips" hidden></div>
@@ -2413,14 +2414,14 @@ INDEX_HTML = r"""<!doctype html>
       <label for="apiKey">API Key</label>
       <div class="api-key-row">
         <input id="apiKey" type="password" placeholder="sk-... (Ollama 등 로컬은 비워두세요)" />
-        <button id="testLlm" class="secondary" type="button">테스트</button>
+        <button id="testLlm" class="secondary" type="button" data-i18n="provider.test">테스트</button>
       </div>
       <div id="testResult" class="test-result hint" hidden></div>
       <div id="providerHint" class="hint"></div>
     </div>
 
     <div class="setting-box settings-tab-pane" data-tab="options" style="border-top:0;margin-top:0;padding-top:0;">
-      <h2>변환 옵션</h2>
+      <h2 data-i18n="options.title">변환 옵션</h2>
       <div class="row">
         <div>
           <label for="timeout">Timeout</label>
@@ -2429,7 +2430,7 @@ INDEX_HTML = r"""<!doctype html>
         <div>
           <div class="label-row">
             <label for="retries">Retries</label>
-            <span class="help" title="layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수.">?</span>
+            <span class="help" title="layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수." data-i18n-title="help.retries">?</span>
           </div>
           <input id="retries" type="number" min="0" step="1" />
         </div>
@@ -2437,15 +2438,15 @@ INDEX_HTML = r"""<!doctype html>
       <div class="row">
         <div>
           <div class="label-row">
-            <label for="llmParallel">LLM 병렬 수</label>
-            <span class="help" title="여러 슬라이드의 LLM 분석을 동시에 몇 개까지 실행할지.">?</span>
+            <label for="llmParallel" data-i18n="options.llmParallel">LLM 병렬 수</label>
+            <span class="help" title="여러 슬라이드의 LLM 분석을 동시에 몇 개까지 실행할지." data-i18n-title="help.llmParallel">?</span>
           </div>
           <input id="llmParallel" type="number" min="1" max="10" step="1" />
         </div>
         <div>
           <div class="label-row">
-            <label for="fontScale">폰트 배율</label>
-            <span class="help" title="PPTX로 렌더링할 때 텍스트 크기 배율.">?</span>
+            <label for="fontScale" data-i18n="options.fontScale">폰트 배율</label>
+            <span class="help" title="PPTX로 렌더링할 때 텍스트 크기 배율." data-i18n-title="help.fontScale">?</span>
           </div>
           <input id="fontScale" type="number" min="0.5" max="1.5" step="0.01" />
         </div>
@@ -2453,8 +2454,8 @@ INDEX_HTML = r"""<!doctype html>
       <div class="row">
         <div>
           <div class="label-row">
-            <label for="hybridAllowedDelta">Hybrid 허용 diff</label>
-            <span class="help" title="원본 대비 픽셀 diff 가 vector 보다 이 값만큼 더 나빠도 hybrid 선택.">?</span>
+            <label for="hybridAllowedDelta" data-i18n="options.hybridAllowedDelta">Hybrid 허용 diff</label>
+            <span class="help" title="원본 대비 픽셀 diff 가 vector 보다 이 값만큼 더 나빠도 hybrid 선택." data-i18n-title="help.hybridAllowedDelta">?</span>
           </div>
           <input id="hybridAllowedDelta" type="number" step="0.1" />
         </div>
@@ -2462,26 +2463,26 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div>
         <div class="label-row">
-          <label for="layoutFailureMode">Layout 실패 처리</label>
-          <span class="help" title="재시도 후에도 layout JSON이 없는 슬라이드 처리 방식.">?</span>
+          <label for="layoutFailureMode" data-i18n="options.layoutFailureMode">Layout 실패 처리</label>
+          <span class="help" title="재시도 후에도 layout JSON이 없는 슬라이드 처리 방식." data-i18n-title="help.layoutFailureMode">?</span>
         </div>
         <select id="layoutFailureMode">
-          <option value="image_fallback">이미지 폴백으로 계속</option>
-          <option value="fail">작업 실패로 중단</option>
+          <option value="image_fallback" data-i18n="options.imageFallback">이미지 폴백으로 계속</option>
+          <option value="fail" data-i18n="options.failStop">작업 실패로 중단</option>
         </select>
       </div>
       <label class="checkline"><input id="sam3" type="checkbox" /> SAM3 bbox refinement</label>
-      <label class="checkline"><input id="editableEmbeddedText" type="checkbox" /> 큰 이미지 내부 텍스트 편집 가능 유지</label>
-      <label class="checkline"><input id="keepIntermediates" type="checkbox" /> 큰 중간 산출물 보존</label>
+      <label class="checkline"><input id="editableEmbeddedText" type="checkbox" /> <span data-i18n="options.editableEmbeddedText">큰 이미지 내부 텍스트 편집 가능 유지</span></label>
+      <label class="checkline"><input id="keepIntermediates" type="checkbox" /> <span data-i18n="options.keepIntermediates">큰 중간 산출물 보존</span></label>
       <div>
         <div class="label-row">
-          <label for="watermarkMode">워터마크만 제거 모드</label>
-          <span class="help" title="LLM/SAM 생략. 빠름: 단순 페인트. 디테일: LaMa 인페인팅(시간 더 걸림).">?</span>
+          <label for="watermarkMode" data-i18n="options.watermarkMode">워터마크만 제거 모드</label>
+          <span class="help" title="LLM/SAM 생략. 빠름: 단순 페인트. 디테일: LaMa 인페인팅(시간 더 걸림)." data-i18n-title="help.watermarkMode">?</span>
         </div>
         <select id="watermarkMode">
-          <option value="off">사용 안 함 (워터마크제거포함 전체변환)</option>
-          <option value="fast">빠름 — 단순 페인트</option>
-          <option value="detail">디테일 — LaMa 인페인팅</option>
+          <option value="off" data-i18n="options.watermarkOff">사용 안 함 (워터마크제거포함 전체변환)</option>
+          <option value="fast" data-i18n="options.watermarkFast">빠름 — 단순 페인트</option>
+          <option value="detail" data-i18n="options.watermarkDetail">디테일 — LaMa 인페인팅</option>
         </select>
       </div>
     </div>
@@ -2528,8 +2529,366 @@ INDEX_HTML = r"""<!doctype html>
     const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode"];
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
+    const languageKey = "starSlideLanguage";
     const customPrefix = "custom:";
     const settingsVersion = 4;
+    let currentLang = "ko";
+
+    const I18N = {
+      ko: {
+        "tagline": "NotebookLM에서 생성한 이미지 슬라이드를 <strong>편집 가능한 PPTX</strong>로 변환",
+        "settings.button": "⚙ 설정",
+        "settings.title": "설정",
+        "theme.light": "라이트 모드",
+        "theme.dark": "다크 모드",
+        "upload.title": "파일 업로드",
+        "upload.drop": "PPTX/PDF를 드래그하거나 클릭",
+        "upload.fileHint": "NotebookLM에서 내려받은 .pptx 또는 .pdf 파일",
+        "upload.start": "변환 시작",
+        "upload.uploading": "업로드 중",
+        "upload.progress": "업로드 {percent}%",
+        "upload.done": "업로드 완료, 변환 대기 중",
+        "provider.info": "LLM은 슬라이드 이미지를 layout JSON으로 해석하고 큰 이미지 영역을 판단하는 데 사용됩니다.<br>기본 흐름은 슬라이드당 약 2회 호출이며, retry 설정에 따라 추가 호출될 수 있습니다.",
+        "provider.sidebarHint": "Base URL · API Key · Custom Provider 관리 · 시스템 상태는 우측 상단 <strong>⚙ 설정</strong>에서.",
+        "provider.registeredHint": "등록한 OpenAI 호환 provider입니다. 이름, URL, 모델명, API key를 수정한 뒤 설정 저장을 누르면 목록에 반영됩니다.",
+        "provider.hint.local": "star-cliproxy 같은 로컬 OpenAI 호환 프록시",
+        "provider.hint.openai": "OpenAI API key와 vision 지원 모델명을 입력",
+        "provider.hint.gemini": "Gemini OpenAI-compatible endpoint 또는 로컬 프록시 모델명 사용",
+        "provider.hint.ollama": "로컬 Ollama. Base URL에 /v1 prefix 필수. API key는 비워두세요.",
+        "provider.groupBuiltIn": "기본 Provider",
+        "provider.groupCustom": "Custom Provider",
+        "provider.addCustom": "Custom 추가",
+        "provider.deleteCustom": "Custom 삭제",
+        "provider.customNamePlaceholder": "예: 사내 프록시",
+        "provider.test": "테스트",
+        "provider.testing": "확인 중...",
+        "provider.refreshModels": "↻ 모델",
+        "model.placeholder": "gpt-5.5 (로컬은 자동 조회)",
+        "model.refreshTitle": "사용 가능한 모델 목록 다시 가져오기",
+        "options.title": "변환 옵션",
+        "options.llmParallel": "LLM 병렬 수",
+        "options.fontScale": "폰트 배율",
+        "options.hybridAllowedDelta": "Hybrid 허용 diff",
+        "options.layoutFailureMode": "Layout 실패 처리",
+        "options.imageFallback": "이미지 폴백으로 계속",
+        "options.failStop": "작업 실패로 중단",
+        "options.editableEmbeddedText": "큰 이미지 내부 텍스트 편집 가능 유지",
+        "options.keepIntermediates": "큰 중간 산출물 보존",
+        "options.watermarkMode": "워터마크만 제거 모드",
+        "options.watermarkOff": "사용 안 함 (워터마크제거포함 전체변환)",
+        "options.watermarkFast": "빠름 — 단순 페인트",
+        "options.watermarkDetail": "디테일 — LaMa 인페인팅",
+        "help.retries": "layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수입니다. 기본 2회이며, 네트워크/LLM 일시 실패를 흡수합니다.",
+        "help.llmParallel": "여러 슬라이드의 LLM 분석 요청을 동시에 몇 개까지 실행할지 정합니다.",
+        "help.fontScale": "PPTX로 다시 렌더링할 때 모든 편집 가능 텍스트 크기에 곱하는 값입니다.",
+        "help.hybridAllowedDelta": "원본 대비 픽셀 차이(diff)가 vector보다 이 값만큼 더 나빠도 hybrid를 선택합니다.",
+        "help.layoutFailureMode": "재시도 후에도 layout JSON이 생성되지 않은 슬라이드 처리 방식입니다.",
+        "help.watermarkMode": "LLM/SAM 변환을 생략하고 입력 슬라이드 이미지 우측 하단의 NotebookLM 워터마크만 제거합니다. 빠름은 단순 페인트, 디테일은 LaMa 인페인팅입니다.",
+        "sidebar.sessionHint": "ⓘ 사이드바 변경은 이 세션에만 적용됩니다. 영구 저장은 우측 상단 <strong>⚙ 설정</strong>.",
+        "jobs.title": "작업 상태",
+        "jobs.empty": "아직 실행한 작업이 없습니다.",
+        "jobs.selectCurrentPage": "현재 페이지 전체 선택",
+        "jobs.selectedCount": "선택 {selected}건 / 총 {total}건",
+        "jobs.totalCount": "총 {total}건",
+        "jobs.deleteSelected": "선택 삭제",
+        "jobs.deleteAll": "전체 삭제",
+        "jobs.deleteTitleAll": "전체 삭제",
+        "jobs.deleteTitleSelected": "선택 항목 삭제",
+        "jobs.deletePrompt": "<strong>{count}건</strong>의 작업을 처리합니다. 방식을 선택하세요.",
+        "jobs.deleteTrash": "_trash 폴더로 이동",
+        "jobs.deletePermanent": "영구 삭제",
+        "jobs.deleteConfirm": "{count}건을 디스크에서 영구 삭제합니다. 진행하시겠습니까?",
+        "jobs.processing": "처리 중...",
+        "jobs.deleteDone": "완료 — 삭제 {deleted}, 스킵 {skipped}",
+        "jobs.deleteFailed": "삭제 실패: {error}",
+        "actions.downloadPptx": "PPTX 다운로드",
+        "actions.preview": "미리보기",
+        "actions.original": "원본 보기",
+        "actions.compare": "비교 보기",
+        "actions.report": "리포트 보기",
+        "actions.layout": "Layout 보기",
+        "actions.cancel": "취소",
+        "actions.rerun": "다시 실행",
+        "common.close": "닫기",
+        "common.cancel": "취소",
+        "common.details": "상세",
+        "common.saveAll": "전체 저장",
+        "common.saved": "✔ 저장되었습니다.",
+        "common.saveFailed": "저장 실패: {error}",
+        "common.systemStatus": "시스템 상태",
+        "common.required": "필수",
+        "common.optional": "옵션",
+        "modal.closeAria": "모달 닫기",
+        "status.done": "완료",
+        "status.failed": "실패",
+        "status.cancelled": "취소됨",
+        "status.cancelling": "취소 중",
+        "status.running": "진행 중",
+        "status.queued": "대기 중",
+        "viewer.original": "원본",
+        "viewer.result": "변환 결과",
+        "viewer.compare": "비교",
+        "viewer.loading": "PPTX 미리보기 라이브러리 로딩 중...",
+        "viewer.failed": "미리보기 실패: {error}",
+        "viewer.slideCounter": "슬라이드 {current} / {total}",
+        "viewer.slideUnknown": "슬라이드 - / -",
+        "viewer.prev": "이전 (←)",
+        "viewer.next": "다음 (→)",
+        "viewer.fullscreen": "전체화면 (F)",
+        "viewer.minimize": "축소 (F)",
+        "viewer.close": "닫기 (Esc)",
+        "report.title": "리포트",
+        "report.loading": "리포트를 불러오는 중입니다.",
+        "report.loadFailed": "리포트 로드 실패: {error}",
+        "report.slides": "슬라이드",
+        "report.finalAvgDiff": "최종 평균 diff",
+        "report.hybridChosen": "Hybrid 선택",
+        "report.vectorChosen": "Vector 선택",
+        "report.interpretation": "해석",
+        "report.interpretationText": "diff는 원본 이미지와 변환 PPTX 렌더 결과의 평균 픽셀 차이입니다. 낮을수록 원본과 가깝습니다. Hybrid는 큰 이미지 객체를 보존한 슬라이드, Vector는 텍스트/도형 중심으로 재구성한 슬라이드입니다.",
+        "report.worstSlides": "주의가 필요한 슬라이드",
+        "report.decisions": "슬라이드별 선택",
+        "report.vectorDownload": "Vector 다운로드",
+        "report.hybridDownload": "Hybrid 다운로드",
+        "report.vectorPreview": "Vector 미리보기",
+        "report.hybridPreview": "Hybrid 미리보기",
+        "report.outputFile": "출력 파일",
+        "report.noDiff": "diff 정보가 없습니다.",
+        "report.noSelection": "선택 리포트가 없습니다.",
+        "table.slide": "슬라이드",
+        "table.diff": "diff",
+        "table.objects": "객체",
+        "table.images": "이미지",
+        "table.selection": "선택",
+        "layout.loading": "Layout JSON을 해석하는 중입니다.",
+        "layout.loadFailed": "Layout JSON 로드 실패: {error}",
+        "layout.totalObjects": "전체 객체",
+        "layout.textObjects": "텍스트 객체",
+        "layout.imageObjects": "이미지 객체",
+        "layout.help": "raster group은 원본 이미지 덩어리로 보존한 도식/일러스트 영역입니다. punched text는 이미지 안의 원본 텍스트를 지우고 PPT 텍스트로 다시 얹은 영역 수입니다.",
+        "layout.title": "제목",
+        "layout.text": "텍스트",
+        "layout.shape": "도형",
+        "layout.download": "Layout JSON 다운로드",
+        "system.checking": "시스템 의존성을 확인하는 중입니다.",
+        "system.failed": "시스템 의존성 확인 실패: {error}",
+        "system.empty": "시스템 의존성 정보가 없습니다.",
+        "alerts.selectFile": "먼저 PPTX/PDF 파일을 선택하세요.",
+        "alerts.uploadFailed": "업로드 실패: {error}",
+        "alerts.networkUploadFailed": "업로드 실패: 네트워크 오류",
+        "alerts.cancelConfirm": "이 작업을 취소하시겠습니까? 진행 단계가 끝난 직후 중단됩니다.",
+        "alerts.cancelFailed": "취소 실패: {error}",
+        "alerts.rerunFailed": "다시 실행 실패: {error}",
+        "phase.queued": "대기 중",
+        "phase.start": "작업 시작",
+        "phase.extract": "슬라이드 이미지 추출 중",
+        "phase.layout": "Vision LLM layout JSON 생성 중",
+        "phase.vectorQa": "vector PPTX 렌더 QA 중",
+        "phase.groups": "큰 이미지 그룹 탐지 중",
+        "phase.sam3": "SAM3 이미지 그룹 보정 중",
+        "phase.hybrid": "hybrid layout 생성 중",
+        "phase.hybridQa": "hybrid PPTX 렌더 QA 중",
+        "phase.select": "최종 layout 자동 선택 중",
+        "phase.final": "최종 PPTX 생성 및 미리보기 렌더링 중",
+        "phase.complete": "완료",
+        "phase.failed": "실패",
+        "phase.cancelled": "취소됨",
+        "phase.cancelling": "취소 중..."
+      },
+      en: {
+        "tagline": "Convert NotebookLM image slides into <strong>editable PPTX</strong>",
+        "settings.button": "⚙ Settings",
+        "settings.title": "Settings",
+        "theme.light": "Light Mode",
+        "theme.dark": "Dark Mode",
+        "upload.title": "Upload",
+        "upload.drop": "Drag or click to upload PPTX/PDF",
+        "upload.fileHint": ".pptx or .pdf exported from NotebookLM",
+        "upload.start": "Start Conversion",
+        "upload.uploading": "Uploading",
+        "upload.progress": "Upload {percent}%",
+        "upload.done": "Upload complete, waiting for conversion",
+        "provider.info": "The LLM interprets slide images into layout JSON and identifies large image regions.<br>The default flow makes about two calls per slide, plus extra calls when retries are needed.",
+        "provider.sidebarHint": "Manage Base URL, API Key, Custom Providers, and system status from <strong>⚙ Settings</strong> in the top right.",
+        "provider.registeredHint": "Registered OpenAI-compatible provider. Edit the name, URL, model, and API key, then save settings to update the list.",
+        "provider.hint.local": "Local OpenAI-compatible proxy such as Star-CliProxy.",
+        "provider.hint.openai": "Enter an OpenAI API key and a vision-capable model name.",
+        "provider.hint.gemini": "Use the Gemini OpenAI-compatible endpoint or a local proxy model name.",
+        "provider.hint.ollama": "Local Ollama. Base URL must include the /v1 prefix. Leave API key empty.",
+        "provider.groupBuiltIn": "Built-in Providers",
+        "provider.groupCustom": "Custom Providers",
+        "provider.addCustom": "Add Custom",
+        "provider.deleteCustom": "Delete Custom",
+        "provider.customNamePlaceholder": "e.g. Internal proxy",
+        "provider.test": "Test",
+        "provider.testing": "Checking...",
+        "provider.refreshModels": "↻ Models",
+        "model.placeholder": "gpt-5.5 (local models are auto-detected)",
+        "model.refreshTitle": "Refresh available model list",
+        "options.title": "Conversion Options",
+        "options.llmParallel": "LLM Parallelism",
+        "options.fontScale": "Font Scale",
+        "options.hybridAllowedDelta": "Hybrid Allowed Diff",
+        "options.layoutFailureMode": "Layout Failure Handling",
+        "options.imageFallback": "Continue with image fallback",
+        "options.failStop": "Stop as failed",
+        "options.editableEmbeddedText": "Keep text inside large images editable",
+        "options.keepIntermediates": "Keep large intermediate files",
+        "options.watermarkMode": "Watermark-only removal",
+        "options.watermarkOff": "Off (full conversion including watermark removal)",
+        "options.watermarkFast": "Fast — simple paint",
+        "options.watermarkDetail": "Detail — LaMa inpaint",
+        "help.retries": "How many times to retry the same slide when layout JSON generation fails. Default is 2 to absorb transient network or LLM failures.",
+        "help.llmParallel": "Maximum number of slide analysis requests to run in parallel.",
+        "help.fontScale": "Multiplier applied to editable text sizes when rendering the PPTX.",
+        "help.hybridAllowedDelta": "Choose hybrid even if its pixel diff is this much worse than vector. Larger values prefer preserving image blocks.",
+        "help.layoutFailureMode": "What to do when a slide still has no layout JSON after retries.",
+        "help.watermarkMode": "Skip LLM/SAM conversion and only remove the NotebookLM watermark in the bottom-right. Fast uses simple paint; Detail uses LaMa inpainting.",
+        "sidebar.sessionHint": "ⓘ Sidebar changes apply only to this session. Use <strong>⚙ Settings</strong> in the top right to save permanently.",
+        "jobs.title": "Jobs",
+        "jobs.empty": "No jobs have been run yet.",
+        "jobs.selectCurrentPage": "Select current page",
+        "jobs.selectedCount": "Selected {selected} / Total {total}",
+        "jobs.totalCount": "Total {total}",
+        "jobs.deleteSelected": "Delete Selected",
+        "jobs.deleteAll": "Delete All",
+        "jobs.deleteTitleAll": "Delete All",
+        "jobs.deleteTitleSelected": "Delete Selected Items",
+        "jobs.deletePrompt": "Choose how to handle <strong>{count}</strong> job(s).",
+        "jobs.deleteTrash": "Move to _trash",
+        "jobs.deletePermanent": "Delete Permanently",
+        "jobs.deleteConfirm": "Permanently delete {count} job(s) from disk?",
+        "jobs.processing": "Processing...",
+        "jobs.deleteDone": "Done — deleted {deleted}, skipped {skipped}",
+        "jobs.deleteFailed": "Delete failed: {error}",
+        "actions.downloadPptx": "Download PPTX",
+        "actions.preview": "Preview",
+        "actions.original": "Original",
+        "actions.compare": "Compare",
+        "actions.report": "Report",
+        "actions.layout": "Layout",
+        "actions.cancel": "Cancel",
+        "actions.rerun": "Run Again",
+        "common.close": "Close",
+        "common.cancel": "Cancel",
+        "common.details": "Details",
+        "common.saveAll": "Save All",
+        "common.saved": "✔ Saved.",
+        "common.saveFailed": "Save failed: {error}",
+        "common.systemStatus": "System Status",
+        "common.required": "Required",
+        "common.optional": "Optional",
+        "modal.closeAria": "Close modal",
+        "status.done": "Done",
+        "status.failed": "Failed",
+        "status.cancelled": "Cancelled",
+        "status.cancelling": "Cancelling",
+        "status.running": "Running",
+        "status.queued": "Queued",
+        "viewer.original": "Original",
+        "viewer.result": "Converted",
+        "viewer.compare": "Compare",
+        "viewer.loading": "Loading PPTX preview library...",
+        "viewer.failed": "Preview failed: {error}",
+        "viewer.slideCounter": "Slide {current} / {total}",
+        "viewer.slideUnknown": "Slide - / -",
+        "viewer.prev": "Previous (←)",
+        "viewer.next": "Next (→)",
+        "viewer.fullscreen": "Fullscreen (F)",
+        "viewer.minimize": "Exit Fullscreen (F)",
+        "viewer.close": "Close (Esc)",
+        "report.title": "Report",
+        "report.loading": "Loading report.",
+        "report.loadFailed": "Report load failed: {error}",
+        "report.slides": "Slides",
+        "report.finalAvgDiff": "Final Avg Diff",
+        "report.hybridChosen": "Hybrid Chosen",
+        "report.vectorChosen": "Vector Chosen",
+        "report.interpretation": "Interpretation",
+        "report.interpretationText": "diff is the average pixel difference between the original slide image and the rendered converted PPTX. Lower is closer to the original. Hybrid preserves large image objects; Vector reconstructs mostly with editable text and shapes.",
+        "report.worstSlides": "Slides Needing Attention",
+        "report.decisions": "Per-slide Selection",
+        "report.vectorDownload": "Download Vector",
+        "report.hybridDownload": "Download Hybrid",
+        "report.vectorPreview": "Preview Vector",
+        "report.hybridPreview": "Preview Hybrid",
+        "report.outputFile": "Output file",
+        "report.noDiff": "No diff information.",
+        "report.noSelection": "No selection report.",
+        "table.slide": "Slide",
+        "table.diff": "diff",
+        "table.objects": "Objects",
+        "table.images": "Images",
+        "table.selection": "Selection",
+        "layout.loading": "Interpreting Layout JSON.",
+        "layout.loadFailed": "Layout JSON load failed: {error}",
+        "layout.totalObjects": "Total Objects",
+        "layout.textObjects": "Text Objects",
+        "layout.imageObjects": "Image Objects",
+        "layout.help": "Raster groups are diagrams/illustrations preserved as original image blocks. Punched text counts text regions removed from an image and rebuilt as PPT text.",
+        "layout.title": "Title",
+        "layout.text": "Text",
+        "layout.shape": "Shapes",
+        "layout.download": "Download Layout JSON",
+        "system.checking": "Checking system dependencies.",
+        "system.failed": "System dependency check failed: {error}",
+        "system.empty": "No system dependency information.",
+        "alerts.selectFile": "Select a PPTX/PDF file first.",
+        "alerts.uploadFailed": "Upload failed: {error}",
+        "alerts.networkUploadFailed": "Upload failed: network error",
+        "alerts.cancelConfirm": "Cancel this job? It will stop after the current step finishes.",
+        "alerts.cancelFailed": "Cancel failed: {error}",
+        "alerts.rerunFailed": "Run again failed: {error}",
+        "phase.queued": "Queued",
+        "phase.start": "Starting job",
+        "phase.extract": "Extracting slide images",
+        "phase.layout": "Generating Vision LLM layout JSON",
+        "phase.vectorQa": "Rendering vector PPTX QA",
+        "phase.groups": "Detecting large image groups",
+        "phase.sam3": "Refining image groups with SAM3",
+        "phase.hybrid": "Building hybrid layouts",
+        "phase.hybridQa": "Rendering hybrid PPTX QA",
+        "phase.select": "Selecting final layouts",
+        "phase.final": "Generating final PPTX and preview",
+        "phase.complete": "Complete",
+        "phase.failed": "Failed",
+        "phase.cancelled": "Cancelled",
+        "phase.cancelling": "Cancelling..."
+      }
+    };
+
+    function t(key, vars = {}) {
+      let value = I18N[currentLang]?.[key] ?? I18N.ko[key] ?? key;
+      for (const [name, replacement] of Object.entries(vars)) {
+        value = value.replaceAll(`{${name}}`, String(replacement));
+      }
+      return value;
+    }
+
+    function applyLanguage(lang) {
+      currentLang = lang === "en" ? "en" : "ko";
+      localStorage.setItem(languageKey, currentLang);
+      document.documentElement.lang = currentLang;
+      document.querySelectorAll("[data-i18n]").forEach(el => { el.textContent = t(el.dataset.i18n); });
+      document.querySelectorAll("[data-i18n-html]").forEach(el => { el.innerHTML = t(el.dataset.i18nHtml); });
+      document.querySelectorAll("[data-i18n-title]").forEach(el => { el.title = t(el.dataset.i18nTitle); });
+      document.querySelectorAll("[data-i18n-placeholder]").forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+      document.querySelectorAll("[data-i18n-aria-label]").forEach(el => { el.setAttribute("aria-label", t(el.dataset.i18nAriaLabel)); });
+      const langButton = $("languageToggle");
+      if (langButton) langButton.textContent = currentLang === "ko" ? "EN" : "한글";
+      applyTheme(document.body.dataset.theme || localStorage.getItem(themeKey) || "dark");
+    }
+
+    function toggleLanguage() {
+      applyLanguage(currentLang === "ko" ? "en" : "ko");
+      if (presets) {
+        renderProviderOptions($("provider")?.value || activeProvider);
+        applyProvider(false);
+        loadSystemCheck();
+      }
+      if (selectedFile) selectFile(selectedFile);
+      refreshJobs();
+    }
 
     // === API key 암호화 keystore (WebCrypto AES-GCM + IndexedDB 비추출 키) ===
     const KEYSTORE_DB = "starSlideKeystore";
@@ -2698,6 +3057,8 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function init() {
+      currentLang = localStorage.getItem(languageKey) === "en" ? "en" : "ko";
+      applyLanguage(currentLang);
       applyTheme(localStorage.getItem(themeKey) || "dark");
       presets = await (await fetch("/api/presets")).json();
       const needsMigration = hasLegacyPlaintextKey();
@@ -2722,6 +3083,7 @@ INDEX_HTML = r"""<!doctype html>
       $("refreshModels").addEventListener("click", () => fetchModelList(true));
       $("start").addEventListener("click", submit);
       $("themeToggle").addEventListener("click", toggleTheme);
+      $("languageToggle").addEventListener("click", toggleLanguage);
       $("settingsButton").addEventListener("click", openSettingsModal);
       document.addEventListener("keydown", handleGlobalKey);
       setupDrop();
@@ -2755,18 +3117,18 @@ INDEX_HTML = r"""<!doctype html>
         const payload = await (await fetch("/api/system-check")).json();
         $("systemCheck").innerHTML = renderSystemCheck(payload.items || []);
       } catch (error) {
-        $("systemCheck").innerHTML = `<div class="hint" style="color:var(--danger);">시스템 의존성 확인 실패: ${escapeHtml(error.message)}</div>`;
+        $("systemCheck").innerHTML = `<div class="hint" style="color:var(--danger);">${escapeHtml(t("system.failed", {error: error.message}))}</div>`;
       }
     }
 
     function renderSystemCheck(items) {
-      if (!items.length) return `<div class="hint">시스템 의존성 정보가 없습니다.</div>`;
+      if (!items.length) return `<div class="hint">${escapeHtml(t("system.empty"))}</div>`;
       return `
-        <h2 style="margin-bottom:2px;">시스템 상태</h2>
+        <h2 style="margin-bottom:2px;">${escapeHtml(t("common.systemStatus"))}</h2>
         ${items.map(item => `
           <div class="system-row">
             <span class="system-name">${escapeHtml(item.label)}</span>
-            <span class="status-pill ${item.ok ? "ok" : ""}">${item.ok ? "OK" : (item.required ? "필수" : "옵션")}</span>
+            <span class="status-pill ${item.ok ? "ok" : ""}">${item.ok ? "OK" : (item.required ? t("common.required") : t("common.optional"))}</span>
             <span class="hint">${escapeHtml(item.ok ? item.path : item.message)}</span>
           </div>
         `).join("")}
@@ -2778,7 +3140,7 @@ INDEX_HTML = r"""<!doctype html>
       document.body.dataset.theme = next;
       localStorage.setItem(themeKey, next);
       const button = $("themeToggle");
-      if (button) button.textContent = next === "dark" ? "라이트 모드" : "다크 모드";
+      if (button) button.textContent = next === "dark" ? t("theme.light") : t("theme.dark");
     }
 
     function toggleTheme() {
@@ -2839,8 +3201,8 @@ INDEX_HTML = r"""<!doctype html>
       const sel = document.getElementById("s_provider");
       if (!sel) return;
       sel.innerHTML = `
-        <optgroup label="기본 Provider">${builtIns}</optgroup>
-        ${customs ? `<optgroup label="Custom Provider">${customs}</optgroup>` : ""}
+        <optgroup label="${escapeHtml(t("provider.groupBuiltIn"))}">${builtIns}</optgroup>
+        ${customs ? `<optgroup label="${escapeHtml(t("provider.groupCustom"))}">${customs}</optgroup>` : ""}
       `;
       sel.value = selected;
     }
@@ -2964,6 +3326,11 @@ INDEX_HTML = r"""<!doctype html>
       return presets.providers.filter(provider => provider.id !== "custom");
     }
 
+    function providerHint(provider) {
+      if (!provider) return "";
+      return I18N[currentLang]?.[`provider.hint.${provider.id}`] || provider.hint || "";
+    }
+
     function isCustomProvider(providerId) {
       return String(providerId || "").startsWith(customPrefix);
     }
@@ -2993,8 +3360,8 @@ INDEX_HTML = r"""<!doctype html>
         return `<option value="${customPrefix}${provider.id}">${escapeHtml(label + detail)}</option>`;
       }).join("");
       $("provider").innerHTML = `
-        <optgroup label="기본 Provider">${builtIns}</optgroup>
-        ${customs ? `<optgroup label="Custom Provider">${customs}</optgroup>` : ""}
+        <optgroup label="${escapeHtml(t("provider.groupBuiltIn"))}">${builtIns}</optgroup>
+        ${customs ? `<optgroup label="${escapeHtml(t("provider.groupCustom"))}">${customs}</optgroup>` : ""}
       `;
       $("provider").value = selected;
       // 사이드바 select 도 같은 옵션·선택값으로 동기화
@@ -3060,8 +3427,8 @@ INDEX_HTML = r"""<!doctype html>
       if (showMessage) {
         const btn = document.getElementById("save");
         if (btn) {
-          btn.textContent = "저장됨";
-          setTimeout(() => { btn.textContent = "설정 저장"; }, 900);
+          btn.textContent = currentLang === "en" ? "Saved" : "저장됨";
+          setTimeout(() => { btn.textContent = t("settings.button"); }, 900);
         }
       }
     }
@@ -3087,18 +3454,18 @@ INDEX_HTML = r"""<!doctype html>
     function openSettingsModal() {
       const html = `
         <div class="settings-tabs" role="tablist">
-          <button type="button" class="settings-tab is-active" data-tab="system" role="tab">시스템 상태</button>
+          <button type="button" class="settings-tab is-active" data-tab="system" role="tab">${escapeHtml(t("common.systemStatus"))}</button>
           <button type="button" class="settings-tab" data-tab="provider" role="tab">LLM Provider</button>
-          <button type="button" class="settings-tab" data-tab="options" role="tab">변환 옵션</button>
+          <button type="button" class="settings-tab" data-tab="options" role="tab">${escapeHtml(t("options.title"))}</button>
         </div>
         <div id="advancedSlot"></div>
         <div class="job-actions" style="margin-top:14px;">
-          <button id="settingsSave" class="primary">전체 저장</button>
-          <button id="settingsClose" class="secondary">닫기</button>
+          <button id="settingsSave" class="primary">${escapeHtml(t("common.saveAll"))}</button>
+          <button id="settingsClose" class="secondary">${escapeHtml(t("common.close"))}</button>
         </div>
         <div id="settingsSaveResult" class="hint" style="margin-top:10px;"></div>
       `;
-      openModal("⚙ 설정", html);
+      openModal(t("settings.button"), html);
       // settings 모달 폭 좁히기
       const modalEl = document.querySelector("#modalBackdrop .modal");
       if (modalEl) modalEl.classList.add("settings-modal");
@@ -3124,12 +3491,12 @@ INDEX_HTML = r"""<!doctype html>
           try {
             saveSettings(false);
             if (resultEl) {
-              resultEl.textContent = "✔ 저장되었습니다.";
+              resultEl.textContent = t("common.saved");
               resultEl.style.color = "var(--teal)";
             }
           } catch (err) {
             if (resultEl) {
-              resultEl.textContent = `저장 실패: ${err && err.message ? err.message : err}`;
+              resultEl.textContent = t("common.saveFailed", {error: err && err.message ? err.message : err});
               resultEl.style.color = "var(--danger)";
             }
           }
@@ -3162,7 +3529,7 @@ INDEX_HTML = r"""<!doctype html>
         $("baseUrl").value = customProvider.baseUrl || "";
         $("model").value = customProvider.model || "";
         $("apiKey").value = customProvider.apiKey || "";
-        $("providerHint").textContent = "등록한 OpenAI 호환 provider입니다. 이름, URL, 모델명, API key를 수정한 뒤 설정 저장을 누르면 목록에 반영됩니다.";
+        $("providerHint").textContent = t("provider.registeredHint");
         maybeAutoFetchModels();
         return;
       }
@@ -3173,7 +3540,7 @@ INDEX_HTML = r"""<!doctype html>
       $("baseUrl").value = overwrite ? (preset.baseUrl || "") : (providerSettings.baseUrl ?? preset.baseUrl ?? "");
       $("model").value = overwrite ? (preset.model || "") : (providerSettings.model ?? preset.model ?? "");
       $("apiKey").value = overwrite ? "" : (providerSettings.apiKey ?? "");
-      $("providerHint").textContent = preset.hint || "";
+      $("providerHint").textContent = providerHint(preset);
       maybeAutoFetchModels();
     }
 
@@ -3274,7 +3641,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function selectFile(file) {
       selectedFile = file || null;
-      $("fileLabel").textContent = selectedFile ? `${selectedFile.name} (${Math.round(selectedFile.size / 1024 / 1024 * 10) / 10} MB)` : "NotebookLM에서 내려받은 .pptx 또는 .pdf 파일";
+      $("fileLabel").textContent = selectedFile ? `${selectedFile.name} (${Math.round(selectedFile.size / 1024 / 1024 * 10) / 10} MB)` : t("upload.fileHint");
       // 새 파일을 고르면 이전 작업의 업로드 진행률/완료 메시지는 무관하므로 즉시 클리어
       setUploadProgress(false, 0, "");
     }
@@ -3328,14 +3695,14 @@ INDEX_HTML = r"""<!doctype html>
       const baseUrl = $("baseUrl").value.trim();
       const apiKey = $("apiKey").value;
       if (!baseUrl) {
-        if (manual) setModelHint("Base URL을 먼저 입력하세요.", "fail");
+        if (manual) setModelHint(currentLang === "en" ? "Enter Base URL first." : "Base URL을 먼저 입력하세요.", "fail");
         return;
       }
       const button = $("refreshModels");
       button.disabled = true;
       const original = button.textContent;
-      button.textContent = "조회 중...";
-      setModelHint("모델 목록을 가져오는 중...");
+      button.textContent = currentLang === "en" ? "Loading..." : "조회 중...";
+      setModelHint(currentLang === "en" ? "Loading model list..." : "모델 목록을 가져오는 중...");
       try {
         const response = await fetch("/api/list-models", {
           method: "POST",
@@ -3348,16 +3715,16 @@ INDEX_HTML = r"""<!doctype html>
         datalist.innerHTML = models.map(m => `<option value="${escapeHtml(m)}"></option>`).join("");
         renderModelChips(models);
         if (models.length === 0) {
-          setModelHint(manual ? "모델 목록을 가져오지 못했습니다 (서버가 /v1/models를 미지원할 수 있음). 직접 입력하세요." : "", "fail");
+          setModelHint(manual ? (currentLang === "en" ? "Could not load model list. The server may not support /v1/models. Enter it manually." : "모델 목록을 가져오지 못했습니다 (서버가 /v1/models를 미지원할 수 있음). 직접 입력하세요.") : "", "fail");
         } else {
           if (!$("model").value) {
             $("model").value = models[0];
             renderModelChips(models);
           }
-          setModelHint(`사용 가능한 모델 ${models.length}개 — 칩을 클릭하거나 직접 입력하세요`, "ok");
+          setModelHint(currentLang === "en" ? `${models.length} model(s) available — click a chip or type manually` : `사용 가능한 모델 ${models.length}개 — 칩을 클릭하거나 직접 입력하세요`, "ok");
         }
       } catch (error) {
-        setModelHint(`모델 목록 요청 실패: ${error.message}`, "fail");
+        setModelHint(currentLang === "en" ? `Model list request failed: ${error.message}` : `모델 목록 요청 실패: ${error.message}`, "fail");
       } finally {
         button.disabled = false;
         button.textContent = original;
@@ -3386,15 +3753,15 @@ INDEX_HTML = r"""<!doctype html>
       const baseUrl = $("baseUrl").value.trim();
       const model = $("model").value.trim();
       const apiKey = $("apiKey").value;
-      if (!baseUrl) { setTestResult("fail", "Base URL을 입력하세요."); return; }
-      if (!model) { setTestResult("fail", "Model 이름을 입력하세요."); return; }
+      if (!baseUrl) { setTestResult("fail", currentLang === "en" ? "Enter Base URL." : "Base URL을 입력하세요."); return; }
+      if (!model) { setTestResult("fail", currentLang === "en" ? "Enter a model name." : "Model 이름을 입력하세요."); return; }
 
       const button = $("testLlm");
       button.disabled = true;
       const original = button.textContent;
-      button.textContent = "확인 중...";
-      const keyNote = apiKey ? "" : " (API key 미설정 — Ollama/로컬 프록시 모드)";
-      setTestResult("busy", `${baseUrl} 로 테스트 호출 중...${keyNote}`);
+      button.textContent = t("provider.testing");
+      const keyNote = apiKey ? "" : (currentLang === "en" ? " (no API key — Ollama/local proxy mode)" : " (API key 미설정 — Ollama/로컬 프록시 모드)");
+      setTestResult("busy", currentLang === "en" ? `Testing ${baseUrl}...${keyNote}` : `${baseUrl} 로 테스트 호출 중...${keyNote}`);
 
       try {
         const response = await fetch("/api/test-llm", {
@@ -3406,13 +3773,13 @@ INDEX_HTML = r"""<!doctype html>
         if (data.ok) {
           const sample = data.sample ? ` · "${data.sample}"` : "";
           const note = data.note ? ` · ${data.note}` : "";
-          setTestResult("ok", `✓ 성공 · ${data.latency_ms}ms · ${data.model}${sample}${keyNote}${note}`);
+          setTestResult("ok", currentLang === "en" ? `✓ Success · ${data.latency_ms}ms · ${data.model}${sample}${keyNote}${note}` : `✓ 성공 · ${data.latency_ms}ms · ${data.model}${sample}${keyNote}${note}`);
         } else {
           const lat = data.latency_ms !== undefined ? ` (${data.latency_ms}ms)` : "";
-          setTestResult("fail", `✗ ${data.error || "알 수 없는 오류"}${lat}`);
+          setTestResult("fail", `✗ ${data.error || (currentLang === "en" ? "Unknown error" : "알 수 없는 오류")}${lat}`);
         }
       } catch (error) {
-        setTestResult("fail", `✗ 요청 실패: ${error.message}`);
+        setTestResult("fail", currentLang === "en" ? `✗ Request failed: ${error.message}` : `✗ 요청 실패: ${error.message}`);
       } finally {
         button.disabled = false;
         button.textContent = original;
@@ -3424,20 +3791,20 @@ INDEX_HTML = r"""<!doctype html>
       if (!visible) { root.hidden = true; return; }
       root.hidden = false;
       root.querySelector(".upload-progress-bar > div").style.width = `${Math.max(0, Math.min(100, percent))}%`;
-      root.querySelector(".upload-progress-label").textContent = label || `업로드 ${Math.round(percent)}%`;
+      root.querySelector(".upload-progress-label").textContent = label || t("upload.progress", {percent: Math.round(percent)});
     }
 
     function submit() {
       if (!selectedFile) {
-        alert("먼저 PPTX/PDF 파일을 선택하세요.");
+        alert(t("alerts.selectFile"));
         return;
       }
       // 변환 시작 시 자동 저장하지 않는다 — 사이드바 변경은 세션 한정.
       // 영구 저장은 우측 상단 ⚙ 설정 모달에서 명시적으로.
       const file = selectedFile;
       $("start").disabled = true;
-      $("start").textContent = "업로드 중";
-      setUploadProgress(true, 0, "업로드 0%");
+      $("start").textContent = t("upload.uploading");
+      setUploadProgress(true, 0, t("upload.progress", {percent: 0}));
 
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `/api/jobs?filename=${encodeURIComponent(file.name)}`, true);
@@ -3445,29 +3812,29 @@ INDEX_HTML = r"""<!doctype html>
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
           const percent = (event.loaded / event.total) * 100;
-          setUploadProgress(true, percent, `업로드 ${Math.round(percent)}%`);
+          setUploadProgress(true, percent, t("upload.progress", {percent: Math.round(percent)}));
         }
       };
       xhr.onload = () => {
         $("start").disabled = false;
-        $("start").textContent = "변환 시작";
+        $("start").textContent = t("upload.start");
         if (xhr.status >= 200 && xhr.status < 300) {
-          setUploadProgress(true, 100, "업로드 완료, 변환 대기 중");
+          setUploadProgress(true, 100, t("upload.done"));
           setTimeout(() => setUploadProgress(false, 0, ""), 1500);
           selectedFile = null;
           $("file").value = "";
-          $("fileLabel").textContent = "NotebookLM에서 내려받은 .pptx 또는 .pdf 파일";
+          $("fileLabel").textContent = t("upload.fileHint");
           refreshJobs();
         } else {
           setUploadProgress(false, 0, "");
-          alert(`업로드 실패: ${xhr.responseText || xhr.status}`);
+          alert(t("alerts.uploadFailed", {error: xhr.responseText || xhr.status}));
         }
       };
       xhr.onerror = () => {
         $("start").disabled = false;
-        $("start").textContent = "변환 시작";
+        $("start").textContent = t("upload.start");
         setUploadProgress(false, 0, "");
-        alert("업로드 실패: 네트워크 오류");
+        alert(t("alerts.networkUploadFailed"));
       };
       xhr.send(file);
     }
@@ -3479,7 +3846,7 @@ INDEX_HTML = r"""<!doctype html>
       const jobs = await (await fetch("/api/jobs")).json();
       const root = $("jobs");
       if (!jobs.length) {
-        root.innerHTML = `<div class="empty">아직 실행한 작업이 없습니다.</div>`;
+        root.innerHTML = `<div class="empty">${escapeHtml(t("jobs.empty"))}</div>`;
         teardownAllSse();
         lastJobIds = [];
         selectedJobIds.clear();
@@ -3537,12 +3904,12 @@ INDEX_HTML = r"""<!doctype html>
         <div class="jobs-toolbar">
           <label class="jobs-toolbar-check">
             <input type="checkbox" id="jobsSelectAll" ${allChecked ? "checked" : ""}${indet} />
-            <span>현재 페이지 전체 선택</span>
+            <span>${escapeHtml(t("jobs.selectCurrentPage"))}</span>
           </label>
-          <span class="hint">선택 ${selectedCount}건 / 총 ${allJobs.length}건</span>
+          <span class="hint">${escapeHtml(t("jobs.selectedCount", {selected: selectedCount, total: allJobs.length}))}</span>
           <span style="flex:1;"></span>
-          <button class="secondary" id="jobsDeleteSelected" ${selectedCount === 0 ? "disabled" : ""}>선택 삭제</button>
-          <button class="secondary" id="jobsDeleteAll" ${allJobs.length === 0 ? "disabled" : ""}>전체 삭제</button>
+          <button class="secondary" id="jobsDeleteSelected" ${selectedCount === 0 ? "disabled" : ""}>${escapeHtml(t("jobs.deleteSelected"))}</button>
+          <button class="secondary" id="jobsDeleteAll" ${allJobs.length === 0 ? "disabled" : ""}>${escapeHtml(t("jobs.deleteAll"))}</button>
         </div>
       `;
     }
@@ -3595,11 +3962,11 @@ INDEX_HTML = r"""<!doctype html>
       }).join("");
       return `
         <div class="pager">
-          <span class="hint">총 ${total}건</span>
+          <span class="hint">${escapeHtml(t("jobs.totalCount", {total}))}</span>
           <span style="flex:1;"></span>
-          <button class="pager-arrow" ${currentPage <= 1 ? "disabled" : ""} onclick="changePage(-1)">‹</button>
+          <button class="pager-arrow" ${currentPage <= 1 ? "disabled" : ""} onclick="changePage(-1)">&lt;</button>
           ${buttons}
-          <button class="pager-arrow" ${currentPage >= totalPages ? "disabled" : ""} onclick="changePage(1)">›</button>
+          <button class="pager-arrow" ${currentPage >= totalPages ? "disabled" : ""} onclick="changePage(1)">&gt;</button>
         </div>
       `;
     }
@@ -3618,22 +3985,22 @@ INDEX_HTML = r"""<!doctype html>
       if (!ids.length) return;
       const html = `
         <div class="empty" style="margin-bottom:12px;">
-          <strong>${ids.length}건</strong>의 작업을 처리합니다. 방식을 선택하세요.
+          ${t("jobs.deletePrompt", {count: ids.length})}
         </div>
         <div class="job-actions">
-          <button id="delTrash" class="secondary">_trash 폴더로 이동</button>
-          <button id="delPerm" class="secondary" style="border-color:var(--danger);color:var(--danger);">영구 삭제</button>
-          <button id="delCancel" class="secondary">취소</button>
+          <button id="delTrash" class="secondary">${escapeHtml(t("jobs.deleteTrash"))}</button>
+          <button id="delPerm" class="secondary" style="border-color:var(--danger);color:var(--danger);">${escapeHtml(t("jobs.deletePermanent"))}</button>
+          <button id="delCancel" class="secondary">${escapeHtml(t("common.cancel"))}</button>
         </div>
         <div id="delResult" class="hint" style="margin-top:10px;"></div>
       `;
-      openModal(opts.allLabel ? "전체 삭제" : "선택 항목 삭제", html);
+      openModal(opts.allLabel ? t("jobs.deleteTitleAll") : t("jobs.deleteTitleSelected"), html);
       const trashBtn = document.getElementById("delTrash");
       const permBtn = document.getElementById("delPerm");
       const cancelBtn = document.getElementById("delCancel");
       const resultEl = document.getElementById("delResult");
       const run = async (mode) => {
-        if (resultEl) resultEl.textContent = "처리 중...";
+        if (resultEl) resultEl.textContent = t("jobs.processing");
         try {
           const response = await fetch("/api/jobs/delete", {
             method: "POST",
@@ -3643,19 +4010,19 @@ INDEX_HTML = r"""<!doctype html>
           if (!response.ok) throw new Error(await response.text());
           const data = await response.json();
           ids.forEach(id => selectedJobIds.delete(id));
-          if (resultEl) resultEl.textContent = `완료 — 삭제 ${data.deleted.length}, 스킵 ${data.skipped.length}`;
+          if (resultEl) resultEl.textContent = t("jobs.deleteDone", {deleted: data.deleted.length, skipped: data.skipped.length});
           await refreshJobs();
           setTimeout(() => closeModal(), 600);
         } catch (err) {
           if (resultEl) {
-            resultEl.textContent = `삭제 실패: ${err && err.message ? err.message : err}`;
+            resultEl.textContent = t("jobs.deleteFailed", {error: err && err.message ? err.message : err});
             resultEl.style.color = "var(--danger)";
           }
         }
       };
       if (trashBtn) trashBtn.addEventListener("click", () => run("trash"));
       if (permBtn) permBtn.addEventListener("click", () => {
-        if (!confirm(`${ids.length}건을 디스크에서 영구 삭제합니다. 진행하시겠습니까?`)) return;
+        if (!confirm(t("jobs.deleteConfirm", {count: ids.length}))) return;
         run("permanent");
       });
       if (cancelBtn) cancelBtn.addEventListener("click", () => closeModal());
@@ -3663,34 +4030,61 @@ INDEX_HTML = r"""<!doctype html>
 
     function statusLabel(status) {
       switch (status) {
-        case "done": return "완료";
-        case "failed": return "실패";
-        case "cancelled": return "취소됨";
-        case "cancelling": return "취소 중";
-        case "running": return "진행 중";
-        case "queued": return "대기 중";
+        case "done": return t("status.done");
+        case "failed": return t("status.failed");
+        case "cancelled": return t("status.cancelled");
+        case "cancelling": return t("status.cancelling");
+        case "running": return t("status.running");
+        case "queued": return t("status.queued");
         default: return status;
       }
+    }
+
+    function phaseLabel(phase) {
+      const text = String(phase || "");
+      const countMatch = text.match(/^(.*) \((\d+)\/(\d+)\)$/);
+      const base = countMatch ? countMatch[1] : text;
+      const map = {
+        "대기 중": "phase.queued",
+        "작업 시작": "phase.start",
+        "슬라이드 이미지 추출 중": "phase.extract",
+        "Vision LLM layout JSON 생성 중": "phase.layout",
+        "vector PPTX 렌더 QA 중": "phase.vectorQa",
+        "큰 이미지 그룹 탐지 중": "phase.groups",
+        "SAM3 이미지 그룹 보정 중": "phase.sam3",
+        "hybrid layout 생성 중": "phase.hybrid",
+        "hybrid PPTX 렌더 QA 중": "phase.hybridQa",
+        "최종 layout 자동 선택 중": "phase.select",
+        "최종 PPTX 생성 및 미리보기 렌더링 중": "phase.final",
+        "완료": "phase.complete",
+        "실패": "phase.failed",
+        "취소됨": "phase.cancelled",
+        "취소 중...": "phase.cancelling",
+      };
+      const key = map[base];
+      if (!key) return text;
+      const translated = t(key);
+      return countMatch ? `${translated} (${countMatch[2]}/${countMatch[3]})` : translated;
     }
 
     function jobActions(job) {
       const parts = [];
       if (job.status === "done") {
         // 사용자 요청 순서: PPTX 다운로드 | 미리보기 | 원본보기 | 비교 | 리포트 | Layout | 다시 실행
-        parts.push(`<a class="button" href="/api/jobs/${job.id}/download">PPTX 다운로드</a>`);
-        parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'result')">미리보기</button>`);
-        parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'original')">원본 보기</button>`);
-        parts.push(`<button class="secondary" onclick="openCompareViewer('${job.id}')">${ICON_COMPARE_INLINE} 비교 보기</button>`);
-        parts.push(`<button class="secondary" onclick="openReport('${job.id}')">리포트 보기</button>`);
+        parts.push(`<a class="button" href="/api/jobs/${job.id}/download">${escapeHtml(t("actions.downloadPptx"))}</a>`);
+        parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'result')">${escapeHtml(t("actions.preview"))}</button>`);
+        parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'original')">${escapeHtml(t("actions.original"))}</button>`);
+        parts.push(`<button class="secondary" onclick="openCompareViewer('${job.id}')">${ICON_COMPARE_INLINE} ${escapeHtml(t("actions.compare"))}</button>`);
+        parts.push(`<button class="secondary" onclick="openReport('${job.id}')">${escapeHtml(t("actions.report"))}</button>`);
         if (job.artifacts?.layout_json) {
-          parts.push(`<button class="secondary" onclick="openLayoutSummary('${job.id}')">Layout 보기</button>`);
+          parts.push(`<button class="secondary" onclick="openLayoutSummary('${job.id}')">${escapeHtml(t("actions.layout"))}</button>`);
         }
       }
       if (job.status === "running" || job.status === "queued" || job.status === "cancelling") {
-        parts.push(`<button class="secondary" onclick="cancelJob('${job.id}')">취소</button>`);
+        parts.push(`<button class="secondary" onclick="cancelJob('${job.id}')">${escapeHtml(t("actions.cancel"))}</button>`);
       }
       if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
-        parts.push(`<button class="secondary" onclick="rerunJob('${job.id}')">다시 실행</button>`);
+        parts.push(`<button class="secondary" onclick="rerunJob('${job.id}')">${escapeHtml(t("actions.rerun"))}</button>`);
       }
       if (!parts.length) return "";
       return `<div class="job-actions">${parts.join("")}</div>`;
@@ -3707,7 +4101,7 @@ INDEX_HTML = r"""<!doctype html>
       // 진행 중에만 진행률 바와 phase/percent 표시. 완료/실패/취소된 카드는 메타와 액션만 보여 군더더기를 줄인다.
       const progressBlock = active
         ? `
-            <div class="hint job-phase">${escapeHtml(job.phase || "")}</div>
+            <div class="hint job-phase">${escapeHtml(phaseLabel(job.phase || ""))}</div>
             <div class="bar"><div style="width:${pct}%"></div></div>
             <div class="job-meta">
               <span class="metric job-percent">${Math.round(pct)}%</span>
@@ -3723,7 +4117,7 @@ INDEX_HTML = r"""<!doctype html>
       const checked = selectedJobIds.has(job.id) ? "checked" : "";
       return `
         <section class="job" data-job-id="${job.id}" data-status="${job.status}">
-          <input type="checkbox" class="job-check" data-job-id="${job.id}" ${checked} aria-label="선택" />
+          <input type="checkbox" class="job-check" data-job-id="${job.id}" ${checked} aria-label="${escapeHtml(t("table.selection"))}" />
           <img class="job-thumb" src="${thumbSrc}" alt="" loading="lazy" decoding="async" onerror="this.classList.add('is-missing')" />
           <div class="job-body">
             <div class="job-head">
@@ -3758,7 +4152,7 @@ INDEX_HTML = r"""<!doctype html>
         badge.textContent = statusLabel(job.status);
       }
       const phase = card.querySelector(".job-phase");
-      if (phase) phase.textContent = job.phase || "";
+      if (phase) phase.textContent = phaseLabel(job.phase || "");
       const bar = card.querySelector(".bar > div");
       if (bar) bar.style.width = `${pct}%`;
       const percent = card.querySelector(".job-percent");
@@ -3818,7 +4212,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function cancelJob(jobId) {
-      if (!confirm("이 작업을 취소하시겠습니까? 진행 단계가 끝난 직후 중단됩니다.")) return;
+      if (!confirm(t("alerts.cancelConfirm"))) return;
       try {
         const response = await fetch(`/api/jobs/${jobId}/cancel`, {
           method: "POST",
@@ -3830,7 +4224,7 @@ INDEX_HTML = r"""<!doctype html>
         jobCache.set(snap.id, snap);
         updateJobCard(snap);
       } catch (error) {
-        alert(`취소 실패: ${error.message}`);
+        alert(t("alerts.cancelFailed", {error: error.message}));
       }
     }
 
@@ -3845,7 +4239,7 @@ INDEX_HTML = r"""<!doctype html>
         currentPage = 1;
         await refreshJobs();
       } catch (error) {
-        alert(`다시 실행 실패: ${error.message}`);
+        alert(t("alerts.rerunFailed", {error: error.message}));
       }
     }
 
@@ -3903,12 +4297,12 @@ INDEX_HTML = r"""<!doctype html>
 
     function kindLabel(kind) {
       switch (kind) {
-        case "original": return "원본";
-        case "result": return "변환 결과";
-        case "selected": return "변환 결과";
+        case "original": return t("viewer.original");
+        case "result": return t("viewer.result");
+        case "selected": return t("viewer.result");
         case "vector": return "Vector";
         case "hybrid": return "Hybrid";
-        case "compare": return "비교";
+        case "compare": return t("viewer.compare");
         default: return kind;
       }
     }
@@ -3936,7 +4330,7 @@ INDEX_HTML = r"""<!doctype html>
       // 모달부터 띄우고 라이브러리 + PPTX 다운로드는 비동기.
       openModal(
         "",
-        `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">PPTX 미리보기 라이브러리 로딩 중...</div></div></div>`,
+        `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">${escapeHtml(t("viewer.loading"))}</div></div></div>`,
         { viewer: true, hideHeader: true }
       );
       try {
@@ -3960,7 +4354,7 @@ INDEX_HTML = r"""<!doctype html>
         }
       } catch (error) {
         const msg = error?.message || String(error);
-        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">미리보기 실패: ${escapeHtml(msg)}</div></div></div>`;
+        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">${escapeHtml(t("viewer.failed", {error: msg}))}</div></div></div>`;
       }
     }
 
@@ -4052,12 +4446,12 @@ INDEX_HTML = r"""<!doctype html>
       const counter = document.querySelector(".viewer-title .counter");
       if (counter) counter.textContent = `${info.current} / ${info.total}`;
       const footCounter = document.querySelector(".viewer-foot span");
-      if (footCounter) footCounter.textContent = `슬라이드 ${info.current} / ${info.total}`;
+      if (footCounter) footCounter.textContent = t("viewer.slideCounter", {current: info.current, total: info.total});
     }
 
     function renderViewerShell() {
       const fullscreenIcon = viewerState.fullscreen ? ICON_MINIMIZE : ICON_FULLSCREEN;
-      const fullscreenTitle = viewerState.fullscreen ? "축소 (F)" : "전체화면 (F)";
+      const fullscreenTitle = viewerState.fullscreen ? t("viewer.minimize") : t("viewer.fullscreen");
       const modal = document.querySelector("#modalBackdrop .modal");
       modal.classList.toggle("fullscreen", viewerState.fullscreen);
       const isCompare = viewerState.kind === "compare";
@@ -4066,7 +4460,7 @@ INDEX_HTML = r"""<!doctype html>
         : `<span class="kind-pill ${viewerState.kind === "original" ? "original" : ""}">${escapeHtml(kindLabel(viewerState.kind))}</span>`;
       const stage = isCompare
         ? `
-            <button class="viewer-nav prev" onclick="moveViewer(-1)" title="이전 (←)">${ICON_PREV}</button>
+            <button class="viewer-nav prev" onclick="moveViewer(-1)" title="${escapeHtml(t("viewer.prev"))}">${ICON_PREV}</button>
             <div class="compare-pane">
               <div class="pane-label">${escapeHtml(kindLabel(viewerState.leftKind))}</div>
               <div class="pane-img-wrap"><div id="compareOrigHost" class="pptx-host"></div></div>
@@ -4075,11 +4469,11 @@ INDEX_HTML = r"""<!doctype html>
               <div class="pane-label result">${escapeHtml(kindLabel(viewerState.rightKind))}</div>
               <div class="pane-img-wrap"><div id="compareResultHost" class="pptx-host"></div></div>
             </div>
-            <button class="viewer-nav next" onclick="moveViewer(1)" title="다음 (→)">${ICON_NEXT}</button>`
+            <button class="viewer-nav next" onclick="moveViewer(1)" title="${escapeHtml(t("viewer.next"))}">${ICON_NEXT}</button>`
         : `
-            <button class="viewer-nav prev" onclick="moveViewer(-1)" title="이전 (←)">${ICON_PREV}</button>
+            <button class="viewer-nav prev" onclick="moveViewer(-1)" title="${escapeHtml(t("viewer.prev"))}">${ICON_PREV}</button>
             <div id="singleHost" class="pptx-host"></div>
-            <button class="viewer-nav next" onclick="moveViewer(1)" title="다음 (→)">${ICON_NEXT}</button>`;
+            <button class="viewer-nav next" onclick="moveViewer(1)" title="${escapeHtml(t("viewer.next"))}">${ICON_NEXT}</button>`;
       $("modalBody").innerHTML = `
         <div class="viewer ${viewerState.fullscreen ? "fullscreen" : ""}">
           <div class="viewer-head">
@@ -4089,16 +4483,16 @@ INDEX_HTML = r"""<!doctype html>
               <span class="counter">- / -</span>
             </div>
             <div class="viewer-actions">
-              <a class="viewer-icon" href="/api/jobs/${viewerState.jobId}/pptx-file?which=${viewerState.kind === "compare" ? viewerState.rightKind : viewerState.kind}" download title="PPTX 다운로드">${ICON_DOWNLOAD}</a>
+              <a class="viewer-icon" href="/api/jobs/${viewerState.jobId}/pptx-file?which=${viewerState.kind === "compare" ? viewerState.rightKind : viewerState.kind}" download title="${escapeHtml(t("actions.downloadPptx"))}">${ICON_DOWNLOAD}</a>
               <button class="viewer-icon" onclick="toggleViewerFullscreen()" title="${fullscreenTitle}">${fullscreenIcon}</button>
-              <button class="viewer-icon" onclick="closeModal()" title="닫기 (Esc)">${ICON_CLOSE}</button>
+              <button class="viewer-icon" onclick="closeModal()" title="${escapeHtml(t("viewer.close"))}">${ICON_CLOSE}</button>
             </div>
           </div>
           <div class="viewer-stage ${isCompare ? "compare" : ""}">${stage}</div>
           <div class="viewer-foot">
-            <button onclick="moveViewer(-1)" title="이전 (←)">${ICON_PREV}</button>
-            <span>슬라이드 - / -</span>
-            <button onclick="moveViewer(1)" title="다음 (→)">${ICON_NEXT}</button>
+            <button onclick="moveViewer(-1)" title="${escapeHtml(t("viewer.prev"))}">${ICON_PREV}</button>
+            <span>${escapeHtml(t("viewer.slideUnknown"))}</span>
+            <button onclick="moveViewer(1)" title="${escapeHtml(t("viewer.next"))}">${ICON_NEXT}</button>
           </div>
         </div>
       `;
@@ -4131,12 +4525,12 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function openReport(jobId) {
-      openModal("리포트", `<div class="empty">리포트를 불러오는 중입니다.</div>`);
+      openModal(t("report.title"), `<div class="empty">${escapeHtml(t("report.loading"))}</div>`);
       try {
         const report = await (await fetch(`/api/jobs/${jobId}/report-summary`)).json();
         $("modalBody").innerHTML = renderReport(report);
       } catch (error) {
-        $("modalBody").innerHTML = `<div class="empty" style="color:var(--danger);">리포트 로드 실패: ${escapeHtml(error.message)}</div>`;
+        $("modalBody").innerHTML = `<div class="empty" style="color:var(--danger);">${escapeHtml(t("report.loadFailed", {error: error.message}))}</div>`;
       }
     }
 
@@ -4148,52 +4542,51 @@ INDEX_HTML = r"""<!doctype html>
       return `
         <div class="hint">${escapeHtml(report.job?.filename || "")}</div>
         <div class="report-grid">
-          <div class="report-card"><span class="hint">슬라이드</span><strong>${s.slide_count ?? "-"}</strong></div>
-          <div class="report-card"><span class="hint">최종 평균 diff</span><strong>${fmt(s.selected_avg_diff)}</strong></div>
-          <div class="report-card"><span class="hint">Hybrid 선택</span><strong>${s.chosen_hybrid_count ?? 0}</strong></div>
-          <div class="report-card"><span class="hint">Vector 선택</span><strong>${s.chosen_vector_count ?? 0}</strong></div>
+          <div class="report-card"><span class="hint">${escapeHtml(t("report.slides"))}</span><strong>${s.slide_count ?? "-"}</strong></div>
+          <div class="report-card"><span class="hint">${escapeHtml(t("report.finalAvgDiff"))}</span><strong>${fmt(s.selected_avg_diff)}</strong></div>
+          <div class="report-card"><span class="hint">${escapeHtml(t("report.hybridChosen"))}</span><strong>${s.chosen_hybrid_count ?? 0}</strong></div>
+          <div class="report-card"><span class="hint">${escapeHtml(t("report.vectorChosen"))}</span><strong>${s.chosen_vector_count ?? 0}</strong></div>
         </div>
-        <h2>해석</h2>
+        <h2>${escapeHtml(t("report.interpretation"))}</h2>
         <p class="hint">
-          diff는 원본 이미지와 변환 PPTX 렌더 결과의 평균 픽셀 차이입니다. 낮을수록 원본과 가깝습니다.
-          Hybrid는 큰 이미지 객체를 보존한 슬라이드, Vector는 텍스트/도형 중심으로 재구성한 슬라이드입니다.
+          ${escapeHtml(t("report.interpretationText"))}
         </p>
-        <h2 style="margin-top:18px;">주의가 필요한 슬라이드</h2>
+        <h2 style="margin-top:18px;">${escapeHtml(t("report.worstSlides"))}</h2>
         ${renderWorstTable(worst)}
-        <h2 style="margin-top:18px;">슬라이드별 선택</h2>
+        <h2 style="margin-top:18px;">${escapeHtml(t("report.decisions"))}</h2>
         ${renderDecisionTable(decisions)}
         <div class="job-actions">
-          ${files.candidate_vector ? `<a class="button secondary" href="/api/jobs/${report.job.id}/artifact/vector">Vector 다운로드</a>` : ""}
-          ${files.candidate_hybrid ? `<a class="button secondary" href="/api/jobs/${report.job.id}/artifact/hybrid">Hybrid 다운로드</a>` : ""}
-          ${files.candidate_vector ? `<button class="secondary" onclick="openSlideViewer('${report.job.id}', 'vector')">Vector 미리보기</button>` : ""}
-          ${files.candidate_hybrid ? `<button class="secondary" onclick="openSlideViewer('${report.job.id}', 'hybrid')">Hybrid 미리보기</button>` : ""}
-          ${files.candidate_vector && files.candidate_hybrid ? `<button class="secondary" onclick="openCompareViewer('${report.job.id}', 'vector', 'hybrid')">${ICON_COMPARE_INLINE} 비교 보기</button>` : ""}
+          ${files.candidate_vector ? `<a class="button secondary" href="/api/jobs/${report.job.id}/artifact/vector">${escapeHtml(t("report.vectorDownload"))}</a>` : ""}
+          ${files.candidate_hybrid ? `<a class="button secondary" href="/api/jobs/${report.job.id}/artifact/hybrid">${escapeHtml(t("report.hybridDownload"))}</a>` : ""}
+          ${files.candidate_vector ? `<button class="secondary" onclick="openSlideViewer('${report.job.id}', 'vector')">${escapeHtml(t("report.vectorPreview"))}</button>` : ""}
+          ${files.candidate_hybrid ? `<button class="secondary" onclick="openSlideViewer('${report.job.id}', 'hybrid')">${escapeHtml(t("report.hybridPreview"))}</button>` : ""}
+          ${files.candidate_vector && files.candidate_hybrid ? `<button class="secondary" onclick="openCompareViewer('${report.job.id}', 'vector', 'hybrid')">${ICON_COMPARE_INLINE} ${escapeHtml(t("actions.compare"))}</button>` : ""}
         </div>
-        <p class="hint">출력 파일: ${escapeHtml(files.output || "")} · ${formatBytes(files.output_bytes)}</p>
+        <p class="hint">${escapeHtml(t("report.outputFile"))}: ${escapeHtml(files.output || "")} · ${formatBytes(files.output_bytes)}</p>
       `;
     }
 
     function renderWorstTable(items) {
-      if (!items.length) return `<div class="empty">diff 정보가 없습니다.</div>`;
-      return `<table><thead><tr><th>슬라이드</th><th>diff</th><th>객체</th><th>이미지</th></tr></thead><tbody>${
+      if (!items.length) return `<div class="empty">${escapeHtml(t("report.noDiff"))}</div>`;
+      return `<table><thead><tr><th>${escapeHtml(t("table.slide"))}</th><th>${escapeHtml(t("table.diff"))}</th><th>${escapeHtml(t("table.objects"))}</th><th>${escapeHtml(t("table.images"))}</th></tr></thead><tbody>${
         items.map(item => `<tr><td>${item.slide_no}</td><td>${fmt(item.mean_abs_diff)}</td><td>${item.object_count ?? "-"}</td><td>${item.picture_count ?? "-"}</td></tr>`).join("")
       }</tbody></table>`;
     }
 
     function renderDecisionTable(items) {
-      if (!items.length) return `<div class="empty">선택 리포트가 없습니다.</div>`;
-      return `<table><thead><tr><th>슬라이드</th><th>선택</th><th>Vector diff</th><th>Hybrid diff</th></tr></thead><tbody>${
+      if (!items.length) return `<div class="empty">${escapeHtml(t("report.noSelection"))}</div>`;
+      return `<table><thead><tr><th>${escapeHtml(t("table.slide"))}</th><th>${escapeHtml(t("table.selection"))}</th><th>Vector diff</th><th>Hybrid diff</th></tr></thead><tbody>${
         items.map(item => `<tr><td>${item.slide_no}</td><td>${escapeHtml(item.chosen || "")}</td><td>${fmt(item.vector_mean_abs_diff)}</td><td>${fmt(item.hybrid_mean_abs_diff)}</td></tr>`).join("")
       }</tbody></table>`;
     }
 
     async function openLayoutSummary(jobId) {
-      openModal("Layout JSON", `<div class="empty">Layout JSON을 해석하는 중입니다.</div>`);
+      openModal("Layout JSON", `<div class="empty">${escapeHtml(t("layout.loading"))}</div>`);
       try {
         const summary = await (await fetch(`/api/jobs/${jobId}/layout-summary`)).json();
         $("modalBody").innerHTML = renderLayoutSummary(summary);
       } catch (error) {
-        $("modalBody").innerHTML = `<div class="empty" style="color:var(--danger);">Layout JSON 로드 실패: ${escapeHtml(error.message)}</div>`;
+        $("modalBody").innerHTML = `<div class="empty" style="color:var(--danger);">${escapeHtml(t("layout.loadFailed", {error: error.message}))}</div>`;
       }
     }
 
@@ -4206,14 +4599,14 @@ INDEX_HTML = r"""<!doctype html>
       return `
         <div class="hint">${escapeHtml(summary.job?.filename || "")}</div>
         <div class="report-grid">
-          <div class="report-card"><span class="hint">슬라이드</span><strong>${summary.slide_count ?? slides.length}</strong></div>
-          <div class="report-card"><span class="hint">전체 객체</span><strong>${totalObjects}</strong></div>
-          <div class="report-card"><span class="hint">텍스트 객체</span><strong>${textObjects}</strong></div>
-          <div class="report-card"><span class="hint">이미지 객체</span><strong>${imageObjects}</strong></div>
+          <div class="report-card"><span class="hint">${escapeHtml(t("report.slides"))}</span><strong>${summary.slide_count ?? slides.length}</strong></div>
+          <div class="report-card"><span class="hint">${escapeHtml(t("layout.totalObjects"))}</span><strong>${totalObjects}</strong></div>
+          <div class="report-card"><span class="hint">${escapeHtml(t("layout.textObjects"))}</span><strong>${textObjects}</strong></div>
+          <div class="report-card"><span class="hint">${escapeHtml(t("layout.imageObjects"))}</span><strong>${imageObjects}</strong></div>
         </div>
-        <p class="hint">raster group은 원본 이미지 덩어리로 보존한 도식/일러스트 영역입니다. punched text는 이미지 안의 원본 텍스트를 지우고 PPT 텍스트로 다시 얹은 영역 수입니다.</p>
+        <p class="hint">${escapeHtml(t("layout.help"))}</p>
         <table>
-          <thead><tr><th>슬라이드</th><th>제목</th><th>객체</th><th>텍스트</th><th>이미지</th><th>도형</th><th>Raster group</th><th>Punched text</th></tr></thead>
+          <thead><tr><th>${escapeHtml(t("table.slide"))}</th><th>${escapeHtml(t("layout.title"))}</th><th>${escapeHtml(t("table.objects"))}</th><th>${escapeHtml(t("layout.text"))}</th><th>${escapeHtml(t("table.images"))}</th><th>${escapeHtml(t("layout.shape"))}</th><th>Raster group</th><th>Punched text</th></tr></thead>
           <tbody>
             ${slides.map(slide => `<tr>
               <td>${slide.slide_no}</td>
@@ -4228,7 +4621,7 @@ INDEX_HTML = r"""<!doctype html>
           </tbody>
         </table>
         <div class="job-actions">
-          <a class="button secondary" href="/api/jobs/${summary.job.id}/artifact/layout-json">Layout JSON 다운로드</a>
+          <a class="button secondary" href="/api/jobs/${summary.job.id}/artifact/layout-json">${escapeHtml(t("layout.download"))}</a>
         </div>
       `;
     }
