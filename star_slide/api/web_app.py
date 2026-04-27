@@ -283,6 +283,25 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="미리보기 이미지가 없습니다.")
         return FileResponse(job.montage, media_type="image/png")
 
+    @app.get("/api/jobs/{job_id}/thumbnail")
+    def thumbnail(job_id: str) -> FileResponse:
+        """Return the first-slide thumbnail for the job list UI.
+
+        Tries cheap pre-rendered sources first (per-slide preview JPEGs,
+        cached page PNGs, then workdir slide PNGs). Returns 404 when no
+        rendered slide image exists yet so the client can hide the slot.
+        """
+        job = require_job(job_id)
+        path = first_slide_thumbnail_path(job)
+        if path is None:
+            raise HTTPException(status_code=404, detail="썸네일이 아직 없습니다.")
+        media_type = "image/jpeg" if path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"Cache-Control": "max-age=300"},
+        )
+
     @app.get("/api/jobs/{job_id}/report")
     def report(job_id: str) -> FileResponse:
         job = require_job(job_id)
@@ -479,6 +498,33 @@ def previews_dir_for(job: JobState) -> Path:
     if job.report:
         return Path(job.report).parent / "previews"
     return WEB_ROOT / job.id / "artifacts" / "previews"
+
+
+def first_slide_thumbnail_path(job: JobState) -> Path | None:
+    """Locate an existing first-slide image for the job-card thumbnail.
+
+    Walks cheap pre-rendered sources from highest-fidelity to fallback.
+    Returns None when no rendered slide image is available yet.
+    """
+    previews = previews_dir_for(job)
+    for kind in ("selected", "hybrid", "vector", "original"):
+        candidate = previews / f"001_{kind}.jpg"
+        if candidate.exists():
+            return candidate
+    for which in ("result", "original"):
+        candidate = pptx_pages_cache_dir(job, which) / "page_001.png"
+        if candidate.exists():
+            return candidate
+    if job.workdir:
+        workdir = Path(job.workdir)
+        for sub in ("qa_selected", "images"):
+            directory = workdir / sub
+            if not directory.is_dir():
+                continue
+            pngs = sorted(directory.glob("*.png"))
+            if pngs:
+                return pngs[0]
+    return None
 
 
 def _resolve_source_for_pages(job: JobState, which: str) -> Path:
@@ -849,6 +895,18 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             hybrid_allowed_delta=float(payload.get("hybridAllowedDelta") or 0.0),
             editable_embedded_text=bool(payload.get("editableEmbeddedText", True)),
         )
+        previews_dir = job_dir / "artifacts" / "previews"
+
+        def _pre_cleanup(workdir_at_cleanup: Path) -> None:
+            # workdir이 정리되기 직전에 썸네일/캐시를 만든다. 이 시점에는
+            # workdir/{images,qa_*}/ PNG 들이 아직 살아있다.
+            with contextlib.suppress(Exception):
+                generate_previews(workdir=workdir_at_cleanup, out_dir=previews_dir)
+            with contextlib.suppress(Exception):
+                prefetch_pptx_pages_from_workdir(
+                    job_id, job_dir, workdir_at_cleanup, output_path, input_path
+                )
+
         result = convert_notebooklm_auto(
             input_path=input_path,
             output_path=output_path,
@@ -856,15 +914,8 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             options=options,
             progress=progress,
             cancel=cancel_check,
+            pre_cleanup_hook=_pre_cleanup,
         )
-        previews_dir = job_dir / "artifacts" / "previews"
-        with contextlib.suppress(Exception):  # preview generation is best-effort
-            generate_previews(workdir=workdir, out_dir=previews_dir)
-        # 슬라이드 뷰어용 PNG cache prefetch — workdir에 이미 있는 페이지별 PNG를
-        # preview_cache로 복사해 두면 사용자가 "미리보기/원본 보기/비교" 클릭 시
-        # LibreOffice 재호출 없이 즉시 표시된다 (~6초 → 0초).
-        with contextlib.suppress(Exception):
-            prefetch_pptx_pages_from_workdir(job_id, job_dir, workdir, result.output, input_path)
         update_job(
             job_id,
             force=True,
@@ -1541,10 +1592,32 @@ INDEX_HTML = r"""<!doctype html>
       gap: 12px;
     }
     .job {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 14px;
       background: var(--surface-2);
+    }
+    .job-thumb {
+      flex: 0 0 auto;
+      width: 220px;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--surface-3);
+      display: block;
+    }
+    .job-thumb.is-missing { display: none; }
+    .job-body {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    @media (max-width: 720px) {
+      .job { flex-direction: column; }
+      .job-thumb { width: 100%; max-width: 320px; }
     }
     .job-head {
       display: flex;
@@ -3008,15 +3081,19 @@ INDEX_HTML = r"""<!doctype html>
               <span class="metric">${new Date(job.created_at * 1000).toLocaleString()}</span>
               ${job.options?.model ? `<span class="metric">${escapeHtml(job.options.model)}</span>` : ""}
             </div>`;
+      const thumbSrc = `/api/jobs/${job.id}/thumbnail?u=${job.updated_at || job.created_at || 0}`;
       return `
         <section class="job" data-job-id="${job.id}" data-status="${job.status}">
-          <div class="job-head">
-            <div class="job-title">${escapeHtml(job.filename)}</div>
-            <span class="badge ${job.status}">${statusLabel(job.status)}</span>
+          <img class="job-thumb" src="${thumbSrc}" alt="" loading="lazy" decoding="async" onerror="this.classList.add('is-missing')" />
+          <div class="job-body">
+            <div class="job-head">
+              <div class="job-title">${escapeHtml(job.filename)}</div>
+              <span class="badge ${job.status}">${statusLabel(job.status)}</span>
+            </div>
+            ${progressBlock}
+            ${error}
+            ${jobActions(job)}
           </div>
-          ${progressBlock}
-          ${error}
-          ${jobActions(job)}
         </section>
       `;
     }
@@ -3033,6 +3110,7 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       card.dataset.status = job.status;
+      const body = card.querySelector(".job-body") || card;
       const pct = Math.max(0, Math.min(100, job.progress || 0));
       const badge = card.querySelector(".badge");
       if (badge) {
@@ -3052,13 +3130,13 @@ INDEX_HTML = r"""<!doctype html>
         div.className = "hint job-error";
         div.style.color = "var(--danger)";
         div.textContent = job.error;
-        const actions = card.querySelector(".job-actions");
-        card.insertBefore(div, actions || null);
+        const actions = body.querySelector(".job-actions");
+        body.insertBefore(div, actions || null);
       }
-      const oldActions = card.querySelector(".job-actions");
+      const oldActions = body.querySelector(".job-actions");
       const newHtml = jobActions(job);
       if (oldActions) oldActions.remove();
-      if (newHtml) card.insertAdjacentHTML("beforeend", newHtml);
+      if (newHtml) body.insertAdjacentHTML("beforeend", newHtml);
     }
 
     function maybeSubscribeSse(job) {

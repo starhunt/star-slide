@@ -72,6 +72,7 @@ def _install_fake_convert(
         options: Any,
         progress: Any | None = None,
         cancel: Any | None = None,
+        pre_cleanup_hook: Any | None = None,
     ) -> Any:
         workdir.mkdir(parents=True, exist_ok=True)
         if progress:
@@ -94,6 +95,8 @@ def _install_fake_convert(
         report_path = workdir / "notebooklm_auto_report.json"
         report_path.write_text(json.dumps({"selected_qa": [], "vector_qa": [], "hybrid_qa": []}), encoding="utf-8")
         output_path.write_bytes(b"PK\x03\x04 fake pptx")
+        if pre_cleanup_hook is not None:
+            pre_cleanup_hook(workdir)
         return type(
             "Result",
             (),
@@ -210,6 +213,7 @@ def test_cancelled_job_resists_late_progress(monkeypatch: pytest.MonkeyPatch, we
         options: Any,
         progress: Any | None = None,
         cancel: Any | None = None,
+        pre_cleanup_hook: Any | None = None,
     ) -> Any:
         # 진행 콜백 한 번 → cancel 신호 대기 → 그 후에도 progress 한 번 더 → JobCancelledError
         if progress:

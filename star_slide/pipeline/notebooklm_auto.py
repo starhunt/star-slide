@@ -12,6 +12,7 @@ raster-group reconstruction, renders both, then picks the safer layout.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
@@ -367,6 +368,7 @@ def collect_artifacts(
     selected_layout_dir: Path,
     selected_qa_dir: Path,
     keep_intermediates: bool,
+    pre_cleanup_hook: Callable[[Path], None] | None = None,
 ) -> dict[str, Path | None]:
     artifact_dir = workdir.parent / "artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -418,6 +420,9 @@ def collect_artifacts(
     remove_generated_sidecars(output_path)
     remove_generated_sidecars(vector_pptx)
     remove_generated_sidecars(hybrid_pptx)
+    if pre_cleanup_hook is not None and workdir.exists():
+        with contextlib.suppress(Exception):
+            pre_cleanup_hook(workdir)
     if not keep_intermediates and workdir.exists():
         shutil.rmtree(workdir)
 
@@ -439,6 +444,7 @@ def convert_notebooklm_auto(
     options: NotebookLmAutoOptions,
     progress: Callable[..., None] | None = None,
     cancel: Callable[[], bool] | None = None,
+    pre_cleanup_hook: Callable[[Path], None] | None = None,
 ) -> NotebookLmAutoResult:
     def emit(message: str, percent: float) -> None:
         if progress is not None:
@@ -577,6 +583,7 @@ def convert_notebooklm_auto(
         selected_layout_dir=selected_layout_dir,
         selected_qa_dir=selected_qa_dir,
         keep_intermediates=options.keep_intermediates,
+        pre_cleanup_hook=pre_cleanup_hook,
     )
     emit("완료", 100)
 
