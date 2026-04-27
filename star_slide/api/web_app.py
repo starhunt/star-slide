@@ -1914,7 +1914,7 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--surface);
       overflow: hidden;
     }
-    body[data-theme="light"] .viewer-stage { background: #1f2937; }
+    body[data-theme="light"] .viewer-stage { background: #e5e7eb; }
     .viewer-stage img {
       max-width: 100%;
       max-height: 100%;
@@ -1931,7 +1931,7 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       place-items: center;
     }
-    body[data-theme="light"] .viewer-stage .pptx-host { background: #1f2937; }
+    body[data-theme="light"] .viewer-stage .pptx-host { background: #e5e7eb; }
     .viewer-stage .pptx-host .pptx-preview-wrapper {
       background: #fff;
       box-shadow: 0 6px 28px rgba(0, 0, 0, .35);
@@ -2609,6 +2609,7 @@ INDEX_HTML = r"""<!doctype html>
         "actions.layout": "Layout 보기",
         "actions.cancel": "취소",
         "actions.rerun": "다시 실행",
+        "actions.delete": "삭제",
         "common.close": "닫기",
         "common.cancel": "취소",
         "common.details": "상세",
@@ -2769,6 +2770,7 @@ INDEX_HTML = r"""<!doctype html>
         "actions.layout": "Layout",
         "actions.cancel": "Cancel",
         "actions.rerun": "Run Again",
+        "actions.delete": "Delete",
         "common.close": "Close",
         "common.cancel": "Cancel",
         "common.details": "Details",
@@ -4069,13 +4071,17 @@ INDEX_HTML = r"""<!doctype html>
 
     function jobActions(job) {
       const parts = [];
+      const watermarkOnly = (job.options?.watermarkMode || "off") !== "off";
       if (job.status === "done") {
         // 사용자 요청 순서: PPTX 다운로드 | 미리보기 | 원본보기 | 비교 | 리포트 | Layout | 다시 실행
         parts.push(`<a class="button" href="/api/jobs/${job.id}/download">${escapeHtml(t("actions.downloadPptx"))}</a>`);
         parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'result')">${escapeHtml(t("actions.preview"))}</button>`);
         parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'original')">${escapeHtml(t("actions.original"))}</button>`);
         parts.push(`<button class="secondary" onclick="openCompareViewer('${job.id}')">${ICON_COMPARE_INLINE} ${escapeHtml(t("actions.compare"))}</button>`);
-        parts.push(`<button class="secondary" onclick="openReport('${job.id}')">${escapeHtml(t("actions.report"))}</button>`);
+        // 워터마크만 제거 모드는 LLM/SAM 변환을 거치지 않아 리포트 데이터가 의미 없으므로 숨긴다.
+        if (!watermarkOnly) {
+          parts.push(`<button class="secondary" onclick="openReport('${job.id}')">${escapeHtml(t("actions.report"))}</button>`);
+        }
         if (job.artifacts?.layout_json) {
           parts.push(`<button class="secondary" onclick="openLayoutSummary('${job.id}')">${escapeHtml(t("actions.layout"))}</button>`);
         }
@@ -4085,6 +4091,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
         parts.push(`<button class="secondary" onclick="rerunJob('${job.id}')">${escapeHtml(t("actions.rerun"))}</button>`);
+        parts.push(`<button class="secondary" style="border-color:var(--danger);color:var(--danger);" onclick="askDelete(['${job.id}'])">${escapeHtml(t("actions.delete"))}</button>`);
       }
       if (!parts.length) return "";
       return `<div class="job-actions">${parts.join("")}</div>`;
