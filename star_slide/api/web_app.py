@@ -128,13 +128,14 @@ def create_app() -> FastAPI:
             ],
             "defaults": {
                 "timeout": 600,
-                "retries": 1,
+                "retries": 2,
                 "llmParallel": 5,
                 "fontScale": 0.93,
                 "keepIntermediates": False,
                 "sam3": True,
                 "hybridAllowedDelta": 0.0,
                 "editableEmbeddedText": True,
+                "layoutFailureMode": "image_fallback",
             },
         }
 
@@ -887,13 +888,14 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             model=str(payload.get("model") or "gpt-5.5"),
             api_key=str(payload.get("apiKey") or ""),
             timeout_sec=float(payload.get("timeout") or 600),
-            retries=int(payload.get("retries") or 1),
+            retries=int(payload.get("retries") or 2),
             llm_parallel=int(payload.get("llmParallel") or 5),
             font_scale=float(payload.get("fontScale") or 0.93),
             keep_intermediates=bool(payload.get("keepIntermediates", False)),
             use_sam3=bool(payload.get("sam3", True)),
             hybrid_allowed_delta=float(payload.get("hybridAllowedDelta") or 0.0),
             editable_embedded_text=bool(payload.get("editableEmbeddedText", True)),
+            layout_failure_mode=str(payload.get("layoutFailureMode") or "image_fallback"),
         )
         previews_dir = job_dir / "artifacts" / "previews"
 
@@ -2122,7 +2124,10 @@ INDEX_HTML = r"""<!doctype html>
             <input id="timeout" type="number" min="60" step="30" />
           </div>
           <div>
-            <label for="retries">Retries</label>
+            <div class="label-row">
+              <label for="retries">Retries</label>
+              <span class="help" title="layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수입니다. 기본 2회이며, 네트워크/LLM 일시 실패를 흡수합니다.">?</span>
+            </div>
             <input id="retries" type="number" min="0" step="1" />
           </div>
         </div>
@@ -2151,6 +2156,16 @@ INDEX_HTML = r"""<!doctype html>
             <input id="hybridAllowedDelta" type="number" step="0.1" />
           </div>
           <div></div>
+        </div>
+        <div>
+          <div class="label-row">
+            <label for="layoutFailureMode">Layout 실패 처리</label>
+            <span class="help" title="재시도 후에도 layout JSON이 생성되지 않은 슬라이드 처리 방식입니다. 이미지 폴백은 해당 슬라이드를 원본 이미지 한 장으로 넣어 전체 변환을 완료하고, 실패 중단은 LLM 상태 확인을 위해 작업을 멈춥니다.">?</span>
+          </div>
+          <select id="layoutFailureMode">
+            <option value="image_fallback">이미지 폴백으로 계속</option>
+            <option value="fail">작업 실패로 중단</option>
+          </select>
         </div>
         <label class="checkline"><input id="sam3" type="checkbox" /> SAM3 bbox refinement <span class="help" title="LLM이 찾은 큰 이미지 영역의 경계를 SAM3로 더 정확히 보정합니다. 켜면 느려질 수 있지만 이미지 객체 crop 품질이 좋아질 수 있습니다.">?</span></label>
         <label class="checkline"><input id="editableEmbeddedText" type="checkbox" /> 큰 이미지 내부 텍스트를 편집 가능하게 유지 <span class="help" title="큰 그림/도식 내부의 텍스트도 PowerPoint 텍스트로 추출하려고 시도합니다. 켜면 편집성은 높아지지만 배경 지우기 흔적이 생길 수 있습니다. 일부 복잡한 패널은 자동으로 이미지 보존을 우선합니다.">?</span></label>
@@ -2216,11 +2231,11 @@ INDEX_HTML = r"""<!doctype html>
       return _pptxPreviewModulePromise;
     }
 
-    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","sam3","editableEmbeddedText","keepIntermediates"];
+    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates"];
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
     const customPrefix = "custom:";
-    const settingsVersion = 3;
+    const settingsVersion = 4;
 
     // === API key 암호화 keystore (WebCrypto AES-GCM + IndexedDB 비추출 키) ===
     const KEYSTORE_DB = "starSlideKeystore";
@@ -2544,10 +2559,16 @@ INDEX_HTML = r"""<!doctype html>
         }
       }
       if (!saved.settingsVersion) {
-        saved.options = {...(saved.options || {}), sam3: true};
+        saved.options = {...(saved.options || {}), sam3: true, retries: 2, layoutFailureMode: "image_fallback"};
       }
       if (saved.settingsVersion !== settingsVersion) {
         saved.options = {...(saved.options || {}), sam3: true};
+        if (saved.options.retries === undefined || Number(saved.options.retries) < 2) {
+          saved.options.retries = 2;
+        }
+        if (!saved.options.layoutFailureMode) {
+          saved.options.layoutFailureMode = "image_fallback";
+        }
         saved.settingsVersion = settingsVersion;
         changed = true;
       }
@@ -2615,10 +2636,11 @@ INDEX_HTML = r"""<!doctype html>
     function currentOptionSettings() {
       return {
         timeout: Number($("timeout").value || 600),
-        retries: Number($("retries").value || 1),
+        retries: Number($("retries").value || 2),
         llmParallel: Number($("llmParallel").value || 5),
         fontScale: Number($("fontScale").value || 0.93),
         hybridAllowedDelta: Number($("hybridAllowedDelta").value || 0),
+        layoutFailureMode: $("layoutFailureMode").value || "image_fallback",
         sam3: $("sam3").checked,
         editableEmbeddedText: $("editableEmbeddedText").checked,
         keepIntermediates: $("keepIntermediates").checked,
@@ -2753,10 +2775,11 @@ INDEX_HTML = r"""<!doctype html>
         model: $("model").value.trim(),
         apiKey: $("apiKey").value,
         timeout: Number($("timeout").value || 600),
-        retries: Number($("retries").value || 1),
+        retries: Number($("retries").value || 2),
         llmParallel: Number($("llmParallel").value || 5),
         fontScale: Number($("fontScale").value || 0.93),
         hybridAllowedDelta: Number($("hybridAllowedDelta").value || 0),
+        layoutFailureMode: $("layoutFailureMode").value || "image_fallback",
         sam3: $("sam3").checked,
         editableEmbeddedText: $("editableEmbeddedText").checked,
         keepIntermediates: $("keepIntermediates").checked,

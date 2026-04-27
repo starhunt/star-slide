@@ -35,7 +35,7 @@ def run(
         envvar=["STAR_SLIDE_API_KEY", "VISION_PROXY_API_KEY"],
     ),
     timeout: float = typer.Option(600.0, "--timeout", envvar="STAR_SLIDE_TIMEOUT"),
-    retries: int = typer.Option(1, "--retries", envvar="STAR_SLIDE_RETRIES"),
+    retries: int = typer.Option(2, "--retries", envvar="STAR_SLIDE_RETRIES"),
     llm_parallel: int = typer.Option(
         5,
         "--llm-parallel",
@@ -65,6 +65,12 @@ def run(
         False,
         "--keep-intermediates/--clean-intermediates",
         help="완료 후 QA 렌더/asset 등 큰 중간 산출물을 보존",
+    ),
+    layout_failure_mode: str = typer.Option(
+        "image_fallback",
+        "--layout-failure-mode",
+        envvar="STAR_SLIDE_LAYOUT_FAILURE_MODE",
+        help="'image_fallback'이면 실패 슬라이드를 원본 이미지로 넣고 계속, 'fail'이면 중단",
     ),
     quiet: bool = typer.Option(
         False,
@@ -100,6 +106,7 @@ def run(
         editable_embedded_text=editable_embedded_text,
         font_scale=font_scale,
         keep_intermediates=keep_intermediates,
+        layout_failure_mode=layout_failure_mode,
     )
 
     show_progress = not (quiet or json_output)

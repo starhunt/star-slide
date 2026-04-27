@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -23,7 +25,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-images", action="store_true")
     parser.add_argument("--cache-buster", default="")
     parser.add_argument("--continue-on-error", action="store_true")
-    parser.add_argument("--retries", type=int, default=0)
+    parser.add_argument(
+        "--fallback-on-error",
+        action="store_true",
+        help="write full-slide image fallback layouts for slides that still fail after retries",
+    )
+    parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--parallel", type=int, default=5)
     parser.add_argument("--qa-pptx", type=Path)
     parser.add_argument("--qa-render-dir", type=Path)
@@ -94,6 +101,31 @@ def process_image(args: argparse.Namespace, image: Path) -> tuple[Path, str]:
     return output, last_error
 
 
+def write_fallback_layout(image: Path, output: Path, *, reason: str = "layout_generation_failed") -> None:
+    with Image.open(image) as im:
+        width, height = im.size
+    layout = {
+        "id": image.stem,
+        "image": image.name,
+        "canvas": {"width": int(width), "height": int(height)},
+        "slide_size_emu": [16_256_000, 9_144_000],
+        "background": {"mode": "solid", "color": "#FFFFFF", "decorations": []},
+        "objects": [
+            {
+                "type": "image",
+                "name": "fallback_source_slide",
+                "path": image.name,
+                "bbox": [0, 0, int(width), int(height)],
+                "replaceable": False,
+                "source": "fallback",
+            }
+        ],
+        "metadata": {"fallback_reason": reason},
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(layout, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def main() -> int:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -121,6 +153,18 @@ def main() -> int:
         failure_path.write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"failures: {failure_path}", flush=True)
 
+    wrote_fallbacks = False
+    if failures and args.continue_on_error and args.fallback_on_error:
+        fallback_layouts: list[Path] = []
+        for item in failures:
+            image = Path(item["image"])
+            output = args.out_dir / f"{image.stem}.layout.json"
+            write_fallback_layout(image, output)
+            fallback_layouts.append(output)
+            print(f"fallback layout: {output}", flush=True)
+        layouts = sorted({*layouts, *fallback_layouts})
+        wrote_fallbacks = True
+
     if args.qa_pptx:
         qa_render_dir = args.qa_render_dir or args.qa_pptx.with_suffix("")
         layout_args = [part for path in layouts for part in ("--layout", str(path))]
@@ -135,6 +179,8 @@ def main() -> int:
             "--render-dir",
             str(qa_render_dir),
         ]
+        if args.allow_images or wrote_fallbacks:
+            cmd.append("--allow-images")
         run(cmd)
 
     return 0

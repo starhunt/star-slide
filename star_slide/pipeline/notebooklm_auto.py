@@ -32,7 +32,7 @@ class NotebookLmAutoOptions:
     model: str = "gpt-5.5"
     api_key: str = ""
     timeout_sec: float = 600.0
-    retries: int = 1
+    retries: int = 2
     use_sam3: bool = True
     hybrid_allowed_delta: float = 0.0
     min_objects: int = 3
@@ -40,6 +40,7 @@ class NotebookLmAutoOptions:
     editable_embedded_text: bool = True
     font_scale: float = 0.93
     keep_intermediates: bool = False
+    layout_failure_mode: str = "image_fallback"
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,8 @@ def generate_layouts(
     options: NotebookLmAutoOptions,
     cache_buster: str,
 ) -> None:
+    if options.layout_failure_mode not in {"image_fallback", "fail"}:
+        raise ValueError("layout_failure_mode must be 'image_fallback' or 'fail'")
     cmd = [
         sys.executable,
         str(script_path("generate_layout_batch.py")),
@@ -177,12 +180,13 @@ def generate_layouts(
         str(options.min_objects),
         "--cache-buster",
         cache_buster,
-        "--continue-on-error",
         "--retries",
         str(options.retries),
         "--parallel",
         str(options.llm_parallel),
     ]
+    if options.layout_failure_mode == "image_fallback":
+        cmd.extend(["--continue-on-error", "--fallback-on-error"])
     if options.api_key:
         cmd.extend(["--api-key", options.api_key])
     run_cmd(cmd)
@@ -489,7 +493,7 @@ def convert_notebooklm_auto(
         image_root=image_dir,
         output=vector_pptx,
         render_dir=vector_qa_dir,
-        allow_images=False,
+        allow_images=options.layout_failure_mode == "image_fallback",
         font_scale=options.font_scale,
     )
 

@@ -131,7 +131,7 @@ uv run star-slide notebooklm run refdata/sample5.pptx \
   -o output/notebooklm_layout/sample5_auto_cli/sample5_auto_cli.pptx \
   --workdir output/notebooklm_layout/sample5_auto_cli/work \
   --timeout 600 \
-  --retries 1 \
+  --retries 2 \
   --llm-parallel 5
 ```
 
@@ -233,9 +233,10 @@ uv run star-slide notebooklm run INPUT.pdf -o OUTPUT.pptx [options]
 | `--model` | `gpt-5.5` | Vision LLM model name |
 | `--api-key` | empty string | Proxy API key |
 | `--timeout` | `600` | LLM timeout in seconds |
-| `--retries` | `1` | Retry count for broken JSON or transient failures |
+| `--retries` | `2` | Retry count for broken JSON, missing layouts, or transient LLM failures |
 | `--llm-parallel` | `5` | Parallel LLM calls for layout/raster-group analysis |
-| `--sam3 / --no-sam3` | `--no-sam3` | Use SAM3 bbox refinement. Disabled by default for easier setup |
+| `--layout-failure-mode` | `image_fallback` | Use a full-slide image fallback after exhausted retries, or set `fail` to stop the job |
+| `--sam3 / --no-sam3` | `--sam3` | Use SAM3 bbox refinement |
 | `--hybrid-allowed-delta` | `0.0` | Allow hybrid even if its diff is worse than vector by this amount |
 | `--editable-embedded-text / --rasterize-embedded-text` | `--editable-embedded-text` | Keep text inside large image groups editable when possible |
 | `--font-scale` | `0.93` | Global text size multiplier for PPTX rendering |

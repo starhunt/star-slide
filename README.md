@@ -131,7 +131,7 @@ uv run star-slide notebooklm run refdata/sample5.pptx \
   -o output/notebooklm_layout/sample5_auto_cli/sample5_auto_cli.pptx \
   --workdir output/notebooklm_layout/sample5_auto_cli/work \
   --timeout 600 \
-  --retries 1 \
+  --retries 2 \
   --llm-parallel 5
 ```
 
@@ -225,9 +225,10 @@ uv run star-slide notebooklm run INPUT.pdf -o OUTPUT.pptx [options]
 | `--model` | `gpt-5.5` | 사용할 Vision LLM 모델명 |
 | `--api-key` | 빈 문자열 | 프록시 API key |
 | `--timeout` | `600` | LLM 호출 타임아웃 초 |
-| `--retries` | `1` | 깨진 JSON 등 실패 시 재시도 횟수 |
+| `--retries` | `2` | 깨진 JSON, layout 미생성, 일시적 LLM 실패 시 재시도 횟수 |
 | `--llm-parallel` | `5` | layout/raster group LLM 병렬 호출 수 |
-| `--sam3 / --no-sam3` | `--no-sam3` | SAM3 bbox refinement 사용 여부. 기본은 설치성을 위해 꺼짐 |
+| `--layout-failure-mode` | `image_fallback` | 재시도 후에도 layout 생성이 실패한 슬라이드를 원본 이미지로 폴백할지, `fail`로 중단할지 선택 |
+| `--sam3 / --no-sam3` | `--sam3` | SAM3 bbox refinement 사용 여부 |
 | `--hybrid-allowed-delta` | `0.0` | hybrid가 vector보다 이 값만큼 나빠도 hybrid 선택 허용 |
 | `--editable-embedded-text / --rasterize-embedded-text` | `--editable-embedded-text` | 큰 이미지 그룹 내부 텍스트를 편집 가능 객체로 유지할지 여부 |
 | `--font-scale` | `0.93` | PPTX 렌더링 시 텍스트 크기 배율 |
