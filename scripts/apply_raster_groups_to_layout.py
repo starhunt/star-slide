@@ -356,6 +356,13 @@ def apply_to_layout(
     text_punchouts_by_group: list[list[list[float]]] = [[] for _ in groups]
     kept_objects: list[dict[str, Any]] = []
     removed: list[dict[str, Any]] = []
+    # raster group 안쪽에서 keep된 text의 bbox 모음. 이 텍스트의 배경으로 깔린
+    # shape(예: 흰색 라벨 박스)가 같은 group 영역에 있어도 함께 보호되도록
+    # shape 처리 단계에서 참조한다. (단순히 그룹 안에 있다는 이유로 배경 shape를
+    # 지우면 raster는 inpaint로 비워지고 floating 텍스트만 남아 깨져 보인다.)
+    kept_text_companion_boxes: list[list[float]] = []
+
+    pending_shapes: list[tuple[dict[str, Any], list[float], list[int]]] = []
 
     for obj in layout.get("objects", []):
         if is_notebooklm_watermark(obj):
@@ -389,8 +396,29 @@ def apply_to_layout(
                 kept_objects.append(obj)
                 for idx in keep_hit_indices:
                     text_punchouts_by_group[idx].append(box)
+                kept_text_companion_boxes.append(box)
             else:
                 removed.append(obj)
+            continue
+
+        # shape는 이번 pass에서 결정 보류 — 모든 텍스트 keep 여부를 본 뒤 판단.
+        pending_shapes.append((obj, box, hit_indices))
+
+    text_companion_overlap_threshold = 0.85
+    for obj, box, hit_indices in pending_shapes:
+        # 동반 보호: 같은 raster group 안에서 keep된 텍스트와 box가 거의 일치하는
+        # shape(예: 라벨 배경 rect)는 텍스트와 함께 살려야 한다. 한쪽 방향이라도
+        # 충분히 겹치면 동반으로 본다 (배경이 텍스트보다 살짝 크거나 작은 경우 모두).
+        protects_text = False
+        for tbox in kept_text_companion_boxes:
+            if (
+                overlap_ratio(box, tbox) >= text_companion_overlap_threshold
+                or overlap_ratio(tbox, box) >= text_companion_overlap_threshold
+            ):
+                protects_text = True
+                break
+        if protects_text:
+            kept_objects.append(obj)
             continue
 
         should_remove = False

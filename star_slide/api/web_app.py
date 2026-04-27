@@ -474,6 +474,46 @@ def pptx_pages_cache_dir(job: JobState, which: str) -> Path:
     return WEB_ROOT / job.id / "preview_cache" / which
 
 
+def prefetch_pptx_pages_from_workdir(
+    job_id: str,
+    job_dir: Path,
+    workdir: Path,
+    result_pptx: Path,
+    input_pptx: Path,
+) -> None:
+    """Reuse workdir's per-page PNGs as the slide viewer cache.
+
+    convert_notebooklm_auto already renders every slide to PNG during QA
+    (workdir/qa_selected for the converted result, workdir/images for the
+    original input). Copying those into preview_cache/{result,original}/
+    means the user's first click on "미리보기/원본 보기/비교 보기" hits the
+    cache instead of triggering a fresh LibreOffice run.
+    """
+    sources = {
+        "result": (workdir / "qa_selected", result_pptx),
+        "original": (workdir / "images", input_pptx),
+    }
+    for which, (src_dir, source_file) in sources.items():
+        if not src_dir.exists() or not source_file.exists():
+            continue
+        pngs = sorted(src_dir.glob("*.png"))
+        if not pngs:
+            continue
+        cache_dir = WEB_ROOT / job_id / "preview_cache" / which
+        if cache_dir.exists():
+            for stale in cache_dir.glob("page_*.png"):
+                with contextlib.suppress(OSError):
+                    stale.unlink()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        for i, src in enumerate(pngs, start=1):
+            dst = cache_dir / f"page_{i:03d}.png"
+            with contextlib.suppress(OSError):
+                shutil.copy2(src, dst)
+        stat = source_file.stat()
+        fingerprint = f"{int(stat.st_mtime)}-{stat.st_size}"
+        (cache_dir / "fingerprint").write_text(fingerprint, encoding="utf-8")
+
+
 def render_pptx_pages(job: JobState, which: str) -> list[Path]:
     """Render the job's PPTX/PDF (result or original) into per-page PNGs (cached).
 
@@ -795,6 +835,11 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
         previews_dir = job_dir / "artifacts" / "previews"
         with contextlib.suppress(Exception):  # preview generation is best-effort
             generate_previews(workdir=workdir, out_dir=previews_dir)
+        # 슬라이드 뷰어용 PNG cache prefetch — workdir에 이미 있는 페이지별 PNG를
+        # preview_cache로 복사해 두면 사용자가 "미리보기/원본 보기/비교" 클릭 시
+        # LibreOffice 재호출 없이 즉시 표시된다 (~6초 → 0초).
+        with contextlib.suppress(Exception):
+            prefetch_pptx_pages_from_workdir(job_id, job_dir, workdir, result.output, input_path)
         update_job(
             job_id,
             force=True,
