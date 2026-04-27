@@ -288,8 +288,13 @@ def inpaint_text_regions(
     if not mask.any():
         return
 
+    # 작은 라벨박스 (예: [Mode: Read-Only]) 의 brackets/특수문자는 글자 외곽선이
+    # 가늘고 방향성이 강해 ink mask로 일부 픽셀이 새어나오기 쉽다. close로 외곽선
+    # 사이의 빈 틈을 메우고 dilate를 키워 TELEA가 잔재 픽셀로부터 검은 사선/
+    # 물결 패턴을 확장하는 케이스를 차단한다.
     kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=6)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.dilate(mask, kernel, iterations=9)
     repaired = cv2.inpaint(rgb, mask, 3, cv2.INPAINT_TELEA)
     alpha = image.getchannel("A")
     image.paste(Image.fromarray(repaired).convert("RGBA"))
