@@ -239,33 +239,61 @@ def test_cancelled_job_resists_late_progress(monkeypatch: pytest.MonkeyPatch, we
     assert final["phase"] == "취소됨"
 
 
-def test_ssrf_guard_rejects_private_addresses() -> None:
-    """SSRF guard rejects file://, private IPs, link-local — passes loopback."""
-    from star_slide.api.web_app import _validate_outbound_url
+def test_ssrf_guard_always_blocks_critical_targets() -> None:
+    """Scheme + link-local + multicast + unspecified are blocked regardless of policy."""
+    from star_slide.api.web_app import _validate_outbound_url, set_allow_private_networks
 
-    ok_cases = [
-        "http://localhost:11434/v1",
-        "http://127.0.0.1:8300/v1",
-        "https://api.openai.com/v1",
-    ]
-    for url in ok_cases:
-        ok, err = _validate_outbound_url(url)
-        assert ok, f"unexpectedly rejected {url}: {err}"
+    set_allow_private_networks(True)  # most permissive policy
+    try:
+        ok_cases = [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:8300/v1",
+            "https://api.openai.com/v1",
+        ]
+        for url in ok_cases:
+            ok, err = _validate_outbound_url(url)
+            assert ok, f"unexpectedly rejected {url}: {err}"
 
-    bad_cases = [
-        "file:///etc/passwd",
-        "gopher://x.example/path",
-        "ftp://example.com/file",
-        "http://169.254.169.254/latest/meta-data",
-        "http://10.0.0.1/",
-        "http://192.168.1.5/",
-        "http://172.16.0.1/",
-        "http:///no-host",
-    ]
-    for url in bad_cases:
-        ok, err = _validate_outbound_url(url)
-        assert not ok, f"unexpectedly accepted {url}"
-        assert err, f"expected error message for {url}"
+        always_bad = [
+            "file:///etc/passwd",
+            "gopher://x.example/path",
+            "ftp://example.com/file",
+            "http://169.254.169.254/latest/meta-data",  # cloud IMDS (link-local)
+            "http:///no-host",
+        ]
+        for url in always_bad:
+            ok, err = _validate_outbound_url(url)
+            assert not ok, f"unexpectedly accepted {url}"
+            assert err, f"expected error message for {url}"
+    finally:
+        set_allow_private_networks(True)
+
+
+def test_ssrf_guard_loopback_default_allows_private_lan() -> None:
+    """Default policy (loopback bind) permits RFC1918 private addresses for LAN LLMs."""
+    from star_slide.api.web_app import _validate_outbound_url, set_allow_private_networks
+
+    set_allow_private_networks(True)
+    try:
+        for url in ["http://10.0.0.1/v1", "http://192.168.1.5/v1", "http://172.16.0.1/v1"]:
+            ok, err = _validate_outbound_url(url)
+            assert ok, f"unexpectedly rejected {url} under loopback policy: {err}"
+    finally:
+        set_allow_private_networks(True)
+
+
+def test_ssrf_guard_strict_blocks_private_lan() -> None:
+    """Strict policy (non-loopback bind) blocks RFC1918 to prevent SSRF pivoting."""
+    from star_slide.api.web_app import _validate_outbound_url, set_allow_private_networks
+
+    set_allow_private_networks(False)
+    try:
+        for url in ["http://10.0.0.1/v1", "http://192.168.1.5/v1", "http://172.16.0.1/v1"]:
+            ok, err = _validate_outbound_url(url)
+            assert not ok, f"unexpectedly accepted {url} under strict policy"
+            assert err, f"expected error message for {url}"
+    finally:
+        set_allow_private_networks(True)
 
 
 def test_upload_oversize_streamed_rejects_and_unlinks(

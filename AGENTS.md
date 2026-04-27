@@ -90,6 +90,29 @@ report=$(uv run star-slide notebooklm run input.pptx -o out.pptx --quiet --json 
 jq '.selection_report[] | {slide_no, chosen, vector_mean_abs_diff, hybrid_mean_abs_diff}' "$report"
 ```
 
+## Network policy for the LLM endpoint (SSRF guard)
+
+The web app applies a host-aware SSRF policy to user-supplied LLM base URLs.
+The CLI does not enforce it (the CLI runs as a single-user shell tool and has
+no untrusted caller), but if you also use the local web app you should know:
+
+| Where the web app is bound | Private RFC1918 IPs (10.x / 172.16-31.x / 192.168.x) | Always blocked |
+|---|---|---|
+| `127.0.0.1` (default) | Allowed — internal GPU servers etc. work fine | link-local (169.254.x cloud IMDS), multicast, unspecified, file://, gopher:// |
+| `0.0.0.0` / LAN IP | Blocked — the server could otherwise be used as an SSRF proxy | same as above |
+
+In other words: when the web app is on loopback there is no untrusted caller
+to weaponize, so calling an LLM on `http://192.168.1.100:8000/v1` is fine.
+When the web app is exposed to a network, the private-network gate flips on
+to prevent an attacker from pivoting through it.
+
+Localhost literals (`localhost`, `127.0.0.1`, `::1`) are always allowed for
+local proxies (Ollama, star-cliproxy).
+
+For agents: this only matters if your tooling also drives the web app. The
+plain CLI conversion path (`star-slide notebooklm run ...`) makes outbound
+HTTP calls directly and is not subject to this gate.
+
 ## What you should *not* do
 
 - **Do not invoke the web app** (`star-slide web run`) from an agent. It is an

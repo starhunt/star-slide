@@ -200,6 +200,22 @@ The Gemini preset uses Google's OpenAI-compatible endpoint format: `https://gene
 
 Provider settings and API keys are stored in browser `localStorage`. This is convenient for local development, but remote or shared deployments should use proper server-side secret storage.
 
+### LAN / private-network LLM policy (SSRF guard)
+
+The web app applies a host-aware SSRF policy to the LLM base URL the user enters.
+
+| Web app bound to | Private IPs (10.x / 172.16-31.x / 192.168.x) | Always blocked |
+| --- | --- | --- |
+| `127.0.0.1` (default) | **Allowed** — internal GPU servers etc. work | link-local (169.254.x cloud IMDS), multicast, unspecified, file:// ... |
+| `0.0.0.0` / LAN IP | **Blocked** — prevents the server being used as an SSRF proxy | same |
+
+Because the default loopback bind cannot be reached by an external caller in
+the first place, calling a corporate LLM on `http://192.168.1.100:8000/v1`
+just works. If the web app is exposed to a network (`--host 0.0.0.0`), the
+private-network gate flips on automatically and a yellow warning is printed
+at startup. The literals `localhost`, `127.0.0.1`, `::1` are always allowed
+regardless of policy (Ollama, star-cliproxy, and similar local proxies).
+
 The web app does not edit PPTX files directly in the browser. Full PowerPoint-level editing and saving would require integration with a separate document editor such as Microsoft Office Online, OnlyOffice, or Collabora Online.
 
 ## CLI Options

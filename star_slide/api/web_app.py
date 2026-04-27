@@ -704,14 +704,30 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
 
 _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
+# 사설 네트워크(RFC1918) LLM 호출 허용 여부.
+# Default True — 우리 서버가 loopback에만 바인딩됐다는 가정 하에 사내 GPU 서버 등
+# 정당한 LAN LLM 사용을 막지 않는다. 우리 서버가 비-loopback host에 바인딩되면
+# (cli/web.py가 자동으로) False로 전환해 SSRF 위험을 차단한다.
+_allow_private_networks: bool = True
+
+
+def set_allow_private_networks(allow: bool) -> None:
+    """Toggle SSRF guard policy for RFC1918 private IPs.
+
+    Loopback / link-local (169.254.x → cloud IMDS) / multicast / unspecified
+    addresses are always rejected regardless of this flag.
+    """
+    global _allow_private_networks
+    _allow_private_networks = bool(allow)
+
 
 def _validate_outbound_url(url: str) -> tuple[bool, str]:
     """SSRF guard for user-supplied OpenAI-compatible base URLs.
 
-    Allows http/https only. Hostnames that resolve to private/loopback/link-local/
-    multicast/reserved IPs are rejected, with an explicit allowlist for the
-    literal loopback hostnames (localhost / 127.0.0.1 / ::1) so local proxies
-    such as Ollama still work.
+    Always rejects: non-http(s) schemes, link-local (cloud IMDS), multicast,
+    unspecified addresses, and resolved loopback unless the hostname literal
+    is explicitly localhost/127.0.0.1/::1.
+    Conditionally rejects RFC1918 private IPs based on _allow_private_networks.
     """
     import ipaddress
     import socket
@@ -730,14 +746,20 @@ def _validate_outbound_url(url: str) -> tuple[bool, str]:
     except socket.gaierror:
         return False, f"호스트 '{hostname}'를 해석할 수 없습니다."
     # is_reserved는 NAT64 prefix(64:ff9b::/96) 등 정상 외부 트래픽도 포함하므로
-    # 제외하고, 명백히 SSRF 위험이 있는 분류만 차단한다.
+    # 제외한다. link-local(169.254.0.0/16)에는 cloud IMDS가 포함되어 정책과 무관하게
+    # 항상 차단한다.
     for _family, _socktype, _proto, _canon, sockaddr in infos:
         try:
             ip = ipaddress.ip_address(sockaddr[0])
         except (ValueError, IndexError):
             continue
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
-            return False, f"내부/사설 네트워크 주소({ip})는 허용되지 않습니다."
+        if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+            return False, f"내부 네트워크 주소({ip})는 허용되지 않습니다."
+        if ip.is_private and not _allow_private_networks:
+            return False, (
+                f"사설 네트워크 주소({ip})는 현재 정책에서 차단됩니다 "
+                "(서버가 비-loopback host에 바인딩되어 SSRF 방지가 활성화됨)."
+            )
     return True, ""
 
 

@@ -197,6 +197,17 @@ Gemini preset은 Google의 OpenAI compatibility endpoint 형식(`https://generat
 
 웹앱의 provider 설정과 API key는 브라우저 `localStorage`에 저장됩니다. 로컬 개발 환경에서 반복 입력을 줄이기 위한 기능이며, 여러 사람이 함께 쓰는 브라우저나 원격 배포 환경에서는 별도 secret storage를 붙이는 것을 권장합니다.
 
+### 사내/사설망 LLM 호출 정책 (SSRF 가드)
+
+웹앱은 사용자가 입력하는 LLM Base URL에 host 기반 SSRF 정책을 적용합니다.
+
+| 웹앱 바인딩 | 사설 IP(10.x / 172.16-31.x / 192.168.x) | 항상 차단 |
+| --- | --- | --- |
+| `127.0.0.1` (기본) | **허용** — 사내 GPU 서버 등 정상 LAN LLM 사용 가능 | link-local(169.254.x, 클라우드 IMDS), multicast, unspecified, file:// 등 |
+| `0.0.0.0` / LAN IP | **차단** — 외부에서 본 서버를 SSRF 프록시로 악용 못 하도록 | 동일 |
+
+기본값(`--host 127.0.0.1`)에서는 외부에서 호출할 수 있는 경로 자체가 없기 때문에 사내 LLM 사용이 자연스럽게 허용됩니다. `--host 0.0.0.0`처럼 외부 노출 시에는 사설 네트워크 호출이 자동 차단되며 시작 시 노란 경고가 출력됩니다. `localhost` / `127.0.0.1` / `::1` 리터럴은 정책과 무관하게 항상 허용(Ollama, star-cliproxy 같은 로컬 프록시).
+
 현재 웹앱은 PPTX 파일 자체를 브라우저에서 직접 편집하지는 않습니다. 웹에서 PowerPoint 수준의 편집과 저장까지 제공하려면 Microsoft Office Online, OnlyOffice, Collabora Online 같은 별도 문서 편집 서버 연동이 필요합니다.
 
 ## 주요 CLI 옵션

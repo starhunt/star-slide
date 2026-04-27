@@ -38,10 +38,15 @@ def run(
 
     web_app.WEB_ROOT = jobs_dir
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    if host not in LOOPBACK_HOSTS:
+    is_loopback = host in LOOPBACK_HOSTS
+    # 호스트 기반 동적 SSRF 정책: loopback bind면 사내 LAN LLM 호출을 허용하고,
+    # 비-loopback bind면 사설 IP 차단을 켠다. 자세한 내용은 AGENTS.md 참고.
+    web_app.set_allow_private_networks(is_loopback)
+    if not is_loopback:
         console.print(
             f"[yellow]⚠ 비-loopback host '{host}'에 바인딩합니다. "
-            "이 웹앱은 인증이 없으니 신뢰된 네트워크에서만 사용하세요.[/]"
+            "인증이 없으므로 신뢰된 네트워크에서만 사용하고, "
+            "사설 네트워크 LLM 호출(SSRF 방지) 차단이 활성화됩니다.[/]"
         )
     console.print(f"[bold]Star-Slide 웹앱[/bold] http://{host}:{WEB_PORT}")
     target = "star_slide.api.web_app:app" if reload else web_app.app
