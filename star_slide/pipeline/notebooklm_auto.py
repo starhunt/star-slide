@@ -32,7 +32,7 @@ class NotebookLmAutoOptions:
     api_key: str = ""
     timeout_sec: float = 600.0
     retries: int = 1
-    use_sam3: bool = False
+    use_sam3: bool = True
     hybrid_allowed_delta: float = 0.0
     min_objects: int = 3
     llm_parallel: int = 5
@@ -111,68 +111,6 @@ def dir_size_bytes(path: Path) -> int:
 
 def report_by_slide(path: Path) -> dict[int, dict[str, Any]]:
     return {int(item["slide_no"]): item for item in read_qa(path)}
-
-
-def object_text(obj: dict[str, Any]) -> str:
-    text = obj.get("text")
-    if isinstance(text, str):
-        return text
-    lines = obj.get("lines")
-    if isinstance(lines, list):
-        return " ".join(str(line) for line in lines)
-    return ""
-
-
-def layout_text_stats(path: Path) -> dict[str, int]:
-    if not path.exists():
-        return {"count": 0, "chars": 0, "primary_count": 0, "primary_chars": 0}
-    layout = json.loads(path.read_text(encoding="utf-8"))
-    count = 0
-    chars = 0
-    primary_count = 0
-    primary_chars = 0
-    for obj in layout.get("objects", []):
-        if obj.get("type") != "text":
-            continue
-        text = object_text(obj).strip()
-        if not text:
-            continue
-        text_len = len(text)
-        count += 1
-        chars += text_len
-        font_size = float(obj.get("font_size") or 0)
-        if font_size >= 16 or (font_size >= 12 and text_len >= 20):
-            primary_count += 1
-            primary_chars += text_len
-    return {
-        "count": count,
-        "chars": chars,
-        "primary_count": primary_count,
-        "primary_chars": primary_chars,
-    }
-
-
-def has_significant_text_loss(vector_stats: dict[str, int], hybrid_stats: dict[str, int]) -> bool:
-    """Return True when hybrid drops meaningful editable text versus vector.
-
-    Pixel diff alone can prefer a hybrid slide that visually looks closer because
-    text remains baked into a raster crop. For an editable PPTX, losing many
-    text objects is worse than a small diff gain, so selection guards against it.
-    """
-    vector_chars = vector_stats["primary_chars"]
-    hybrid_chars = hybrid_stats["primary_chars"]
-    vector_count = vector_stats["primary_count"]
-    hybrid_count = hybrid_stats["primary_count"]
-    if vector_count < 4 or vector_chars < 80:
-        return False
-
-    lost_count = vector_count - hybrid_count
-    lost_chars = vector_chars - hybrid_chars
-    if lost_count >= 3 and lost_chars >= 24:
-        return True
-    if lost_count >= 5:
-        return True
-    return bool(lost_chars >= 80 and hybrid_chars < vector_chars * 0.92)
 
 
 def has_raster_groups(groups_dir: Path, slide_stem: str) -> bool:
@@ -359,22 +297,16 @@ def select_layouts(
         v_diff = vector.get(slide_no, {}).get("mean_abs_diff")
         h_diff = hybrid.get(slide_no, {}).get("mean_abs_diff")
         has_groups = has_raster_groups(groups_dir, stem)
-        vector_text = layout_text_stats(layout)
-        hybrid_text = layout_text_stats(h_layout)
-        text_loss = has_significant_text_loss(vector_text, hybrid_text)
         choose_hybrid = bool(
             has_groups
             and h_layout.exists()
             and isinstance(v_diff, int | float)
             and isinstance(h_diff, int | float)
             and h_diff <= v_diff + allowed_delta
-            and not text_loss
         )
         chosen = h_layout if choose_hybrid else layout
         reason = "hybrid_diff_better" if choose_hybrid else "vector_default"
-        if text_loss:
-            reason = "vector_text_preservation"
-        elif not has_groups:
+        if not has_groups:
             reason = "vector_no_raster_groups"
         elif not h_layout.exists():
             reason = "vector_missing_hybrid_layout"
@@ -390,8 +322,6 @@ def select_layouts(
                 "vector_mean_abs_diff": v_diff,
                 "hybrid_mean_abs_diff": h_diff,
                 "reason": reason,
-                "vector_text": vector_text,
-                "hybrid_text": hybrid_text,
             }
         )
 

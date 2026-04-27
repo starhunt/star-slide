@@ -132,7 +132,7 @@ def create_app() -> FastAPI:
                 "llmParallel": 5,
                 "fontScale": 0.93,
                 "keepIntermediates": False,
-                "sam3": False,
+                "sam3": True,
                 "hybridAllowedDelta": 0.0,
                 "editableEmbeddedText": True,
             },
@@ -845,7 +845,7 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             llm_parallel=int(payload.get("llmParallel") or 5),
             font_scale=float(payload.get("fontScale") or 0.93),
             keep_intermediates=bool(payload.get("keepIntermediates", False)),
-            use_sam3=bool(payload.get("sam3", False)),
+            use_sam3=bool(payload.get("sam3", True)),
             hybrid_allowed_delta=float(payload.get("hybridAllowedDelta") or 0.0),
             editable_embedded_text=bool(payload.get("editableEmbeddedText", True)),
         )
@@ -2471,9 +2471,10 @@ INDEX_HTML = r"""<!doctype html>
         }
       }
       if (!saved.settingsVersion) {
-        saved.options = {...(saved.options || {}), sam3: false};
+        saved.options = {...(saved.options || {}), sam3: true};
       }
       if (saved.settingsVersion !== settingsVersion) {
+        saved.options = {...(saved.options || {}), sam3: true};
         saved.settingsVersion = settingsVersion;
         changed = true;
       }
