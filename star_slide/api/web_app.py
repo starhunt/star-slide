@@ -423,6 +423,32 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "max-age=3600"},
         )
 
+    @app.get("/api/jobs/{job_id}/pptx-pages")
+    async def pptx_pages_index(job_id: str, which: str = "result") -> JSONResponse:
+        job = require_job(job_id)
+        try:
+            pages = await asyncio.to_thread(render_pptx_pages, job, which)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return JSONResponse(
+            {
+                "job": {"id": job.id, "filename": job.filename},
+                "which": which,
+                "pages": len(pages),
+            }
+        )
+
+    @app.get("/api/jobs/{job_id}/pptx-pages/{page_no}")
+    def pptx_page_image(job_id: str, page_no: int, which: str = "result") -> FileResponse:
+        job = require_job(job_id)
+        cache_dir = pptx_pages_cache_dir(job, which)
+        path = cache_dir / f"page_{page_no:03d}.png"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="해당 페이지가 없습니다. /pptx-pages를 먼저 호출하세요.")
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
     return app
 
 
@@ -430,6 +456,91 @@ def previews_dir_for(job: JobState) -> Path:
     if job.report:
         return Path(job.report).parent / "previews"
     return WEB_ROOT / job.id / "artifacts" / "previews"
+
+
+def _resolve_source_for_pages(job: JobState, which: str) -> Path:
+    if which == "result":
+        candidate = Path(job.output) if job.output else None
+    elif which == "original":
+        candidate = Path(job.input_path) if job.input_path else None
+    else:
+        raise FileNotFoundError(f"지원하지 않는 미리보기 종류 '{which}' (result|original)")
+    if candidate is None or not candidate.exists():
+        raise FileNotFoundError(f"미리보기 원본 파일을 찾을 수 없습니다 ({which}).")
+    return candidate
+
+
+def pptx_pages_cache_dir(job: JobState, which: str) -> Path:
+    return WEB_ROOT / job.id / "preview_cache" / which
+
+
+def render_pptx_pages(job: JobState, which: str) -> list[Path]:
+    """Render the job's PPTX/PDF (result or original) into per-page PNGs (cached).
+
+    Cache keyed on source file mtime+size. Returns sorted PNG paths.
+    Raises FileNotFoundError when the source file is missing,
+    RuntimeError when LibreOffice/pdftoppm dependencies are unavailable.
+    """
+    source = _resolve_source_for_pages(job, which)
+    cache_dir = pptx_pages_cache_dir(job, which)
+    stat = source.stat()
+    fingerprint = f"{int(stat.st_mtime)}-{stat.st_size}"
+    fingerprint_file = cache_dir / "fingerprint"
+
+    if (
+        cache_dir.exists()
+        and fingerprint_file.exists()
+        and fingerprint_file.read_text(encoding="utf-8").strip() == fingerprint
+    ):
+        existing = sorted(cache_dir.glob("page_*.png"))
+        if existing:
+            return existing
+
+    if cache_dir.exists():
+        for stale in cache_dir.glob("page_*.png"):
+            with contextlib.suppress(OSError):
+                stale.unlink()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = source.suffix.lower()
+    try:
+        if suffix == ".pptx":
+            from star_slide.rasterize.libreoffice import render_pptx_to_pngs
+
+            rendered = render_pptx_to_pngs(source, cache_dir)
+        elif suffix == ".pdf":
+            from pdf2image import convert_from_path
+
+            images = convert_from_path(str(source), dpi=160)
+            rendered = []
+            for i, img in enumerate(images, start=1):
+                out_path = cache_dir / f"page_{i:03d}.png"
+                img.save(out_path, "PNG")
+                rendered.append(out_path)
+        else:
+            raise FileNotFoundError(f"지원하지 않는 입력 형식 '{suffix}'")
+    except Exception as exc:
+        raise RuntimeError(f"미리보기 렌더링 실패: {sanitize_error(str(exc))}") from exc
+
+    # 파일명을 page_NNN.png 규약으로 정렬해서 다시 저장 (libreoffice 출력은 slide_NNN)
+    final_pages: list[Path] = []
+    for i, src in enumerate(sorted(rendered), start=1):
+        target = cache_dir / f"page_{i:03d}.png"
+        if src != target:
+            with contextlib.suppress(OSError):
+                if target.exists():
+                    target.unlink()
+                src.rename(target)
+        final_pages.append(target)
+
+    # libreoffice 헬퍼가 만든 임시 디렉토리 정리
+    pdf_dir = cache_dir / "_pdf"
+    if pdf_dir.exists():
+        with contextlib.suppress(OSError):
+            shutil.rmtree(pdf_dir)
+
+    fingerprint_file.write_text(fingerprint, encoding="utf-8")
+    return sorted(cache_dir.glob("page_*.png"))
 
 
 def sync_saved_jobs() -> None:
@@ -2712,7 +2823,7 @@ INDEX_HTML = r"""<!doctype html>
       if (job.status === "done") {
         // 사용자 요청 순서: PPTX 다운로드 | 미리보기 | 원본보기 | 리포트 | Layout | 다시 실행
         parts.push(`<a class="button" href="/api/jobs/${job.id}/download">PPTX 다운로드</a>`);
-        parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'selected')">미리보기</button>`);
+        parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'result')">미리보기</button>`);
         parts.push(`<button class="secondary" onclick="openSlideViewer('${job.id}', 'original')">원본 보기</button>`);
         parts.push(`<button class="secondary" onclick="openReport('${job.id}')">리포트 보기</button>`);
         if (job.artifacts?.layout_json) {
@@ -2910,6 +3021,7 @@ INDEX_HTML = r"""<!doctype html>
     function kindLabel(kind) {
       switch (kind) {
         case "original": return "원본";
+        case "result": return "변환 결과";
         case "selected": return "변환 결과";
         case "vector": return "Vector";
         case "hybrid": return "Hybrid";
@@ -2917,29 +3029,34 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
-    async function openSlideViewer(jobId, kind) {
+    async function openSlideViewer(jobId, which) {
       const job = jobCache.get(jobId);
       const filename = job?.filename || "";
-      // 우선 모달을 띄우고 로딩 표시. 데이터 도착 후 본문 교체.
-      openModal("", `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">슬라이드 목록을 불러오는 중...</div></div></div>`, { viewer: true, hideHeader: true });
+      // 우선 모달을 띄우고 로딩 표시. PPTX 렌더링은 첫 호출 시 수 초 ~ 수십 초 걸릴 수 있음.
+      openModal("", `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">${escapeHtml(kindLabel(which))} PPTX를 슬라이드 이미지로 변환 중입니다... (처음 한 번만 시간이 걸리고 이후엔 즉시 표시됩니다)</div></div></div>`, { viewer: true, hideHeader: true });
       try {
-        const response = await fetch(`/api/jobs/${jobId}/previews`);
-        if (!response.ok) throw new Error(await response.text());
+        const response = await fetch(`/api/jobs/${jobId}/pptx-pages?which=${encodeURIComponent(which)}`);
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(detail || `HTTP ${response.status}`);
+        }
         const data = await response.json();
-        const slides = (data.slides || []).filter(s => Array.isArray(s.kinds) && s.kinds.includes(kind));
-        if (slides.length === 0) {
-          $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">'${kindLabel(kind)}' 미리보기 이미지가 없습니다. (이전 작업이라 산출물이 없을 수 있습니다.)</div></div></div>`;
+        const pageCount = Number(data.pages || 0);
+        if (pageCount <= 0) {
+          $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">표시할 슬라이드가 없습니다.</div></div></div>`;
           return;
         }
+        const pages = [];
+        for (let i = 1; i <= pageCount; i++) pages.push({ page_no: i });
         viewerState.jobId = jobId;
         viewerState.filename = filename;
-        viewerState.kind = kind;
-        viewerState.slides = slides;
+        viewerState.kind = which;
+        viewerState.slides = pages;
         viewerState.index = 0;
         viewerState.fullscreen = false;
         renderViewer();
       } catch (error) {
-        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">미리보기 실패: ${escapeHtml(error.message)}</div></div></div>`;
+        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">미리보기 실패: ${escapeHtml(error.message || error)}</div></div></div>`;
       }
     }
 
@@ -2950,7 +3067,8 @@ INDEX_HTML = r"""<!doctype html>
       const kind = viewerState.kind;
       const total = viewerState.slides.length;
       const idx = viewerState.index;
-      const imgUrl = `/api/jobs/${jobId}/previews/${slide.slide_no}/${kind}`;
+      const pageNo = slide.page_no || (idx + 1);
+      const imgUrl = `/api/jobs/${jobId}/pptx-pages/${pageNo}?which=${encodeURIComponent(kind)}`;
       const fullscreenIcon = viewerState.fullscreen ? ICON_MINIMIZE : ICON_FULLSCREEN;
       const fullscreenTitle = viewerState.fullscreen ? "축소 (F)" : "전체화면 (F)";
       const modal = document.querySelector("#modalBackdrop .modal");
@@ -2971,12 +3089,12 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="viewer-stage">
             <button class="viewer-nav prev" onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
-            <img src="${imgUrl}" alt="슬라이드 ${slide.slide_no}" />
+            <img src="${imgUrl}" alt="슬라이드 ${pageNo}" />
             <button class="viewer-nav next" onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>
           </div>
           <div class="viewer-foot">
             <button onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
-            <span>슬라이드 ${slide.slide_no} · ${idx + 1} / ${total}</span>
+            <span>슬라이드 ${pageNo} / ${total}</span>
             <button onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>
           </div>
         </div>
@@ -2998,10 +3116,11 @@ INDEX_HTML = r"""<!doctype html>
     function downloadCurrentSlide() {
       const slide = viewerState.slides[viewerState.index];
       if (!slide) return;
-      const url = `/api/jobs/${viewerState.jobId}/previews/${slide.slide_no}/${viewerState.kind}`;
+      const pageNo = slide.page_no || (viewerState.index + 1);
+      const url = `/api/jobs/${viewerState.jobId}/pptx-pages/${pageNo}?which=${encodeURIComponent(viewerState.kind)}`;
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${viewerState.filename || "slide"}_${slide.slide_no}_${viewerState.kind}.jpg`;
+      a.download = `${viewerState.filename || "slide"}_${pageNo}_${viewerState.kind}.png`;
       document.body.appendChild(a);
       a.click();
       a.remove();
