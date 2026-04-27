@@ -36,6 +36,22 @@ def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
 
 
+def redact_cmd(cmd: object) -> object:
+    if not isinstance(cmd, list):
+        return cmd
+    redacted = []
+    hide_next = False
+    for part in cmd:
+        if hide_next:
+            redacted.append("********")
+            hide_next = False
+            continue
+        redacted.append(part)
+        if part == "--api-key":
+            hide_next = True
+    return redacted
+
+
 def layout_cmd(args: argparse.Namespace, image: Path, output: Path, attempt: int) -> list[str]:
     cmd = [
         sys.executable,
@@ -70,9 +86,11 @@ def process_image(args: argparse.Namespace, image: Path) -> tuple[Path, str]:
             run(layout_cmd(args, image, output, attempt))
             return output, ""
         except subprocess.CalledProcessError as exc:
-            last_error = str(exc)
+            last_error = f"Command {redact_cmd(exc.cmd)!r} returned non-zero exit status {exc.returncode}."
             if attempt < args.retries:
                 print(f"retrying {image} after failure ({attempt + 1}/{args.retries})", flush=True)
+    output.unlink(missing_ok=True)
+    output.with_suffix(output.suffix + ".usage.json").unlink(missing_ok=True)
     return output, last_error
 
 

@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import socket
+import sys
 import threading
 import time
 import urllib.error
@@ -19,8 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from layout_qa import validate_layout
 from PIL import Image
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from layout_qa import validate_layout  # noqa: E402
 
 DEFAULT_BASE_URL = "http://localhost:8300/v1"
 DEFAULT_MODEL = "gemini-pro"
@@ -196,6 +202,27 @@ def _drop_notebooklm_watermark(layout: dict[str, Any]) -> None:
     layout["objects"] = filtered
 
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float)
+
+
+def _normalize_polyline_points(layout: dict[str, Any]) -> None:
+    objects = layout.get("objects")
+    if not isinstance(objects, list):
+        return
+    for obj in objects:
+        if not isinstance(obj, dict) or obj.get("type") != "polyline":
+            continue
+        points = obj.get("points")
+        if not isinstance(points, list):
+            continue
+        if points and all(_is_number(item) for item in points):
+            paired = []
+            for idx in range(0, len(points) - 1, 2):
+                paired.append([points[idx], points[idx + 1]])
+            obj["points"] = paired
+
+
 def _call_vision_proxy(
     *,
     base_url: str,
@@ -315,6 +342,7 @@ def generate_layout(
     layout.setdefault("canvas", {"width": image_size[0], "height": image_size[1]})
     layout.setdefault("slide_size_emu", [16_256_000, 9_144_000])
     _drop_notebooklm_watermark(layout)
+    _normalize_polyline_points(layout)
 
     errors = validate_layout(layout, strict_editable=strict_editable)
     output.parent.mkdir(parents=True, exist_ok=True)
