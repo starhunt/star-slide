@@ -32,7 +32,7 @@ from star_slide.pipeline.notebooklm_auto import (
 )
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import Body, FastAPI, HTTPException, Request
     from fastapi.responses import (
         FileResponse,
         HTMLResponse,
@@ -388,6 +388,39 @@ def create_app() -> FastAPI:
             update_job(job_id, phase="취소 중...", status="cancelling")
         return JSONResponse(job_snapshot(require_job(job_id)))
 
+    @app.post("/api/jobs/delete")
+    def delete_jobs_bulk(
+        request: Request,
+        payload: dict[str, Any] = Body(default_factory=dict),
+    ) -> JSONResponse:
+        require_json_content_type(request)
+        ids = payload.get("ids") or []
+        mode = (str(payload.get("mode") or "trash")).strip().lower()
+        if mode not in {"permanent", "trash"}:
+            raise HTTPException(status_code=400, detail="mode 는 permanent 또는 trash 여야 합니다.")
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(status_code=400, detail="ids 가 비어 있습니다.")
+        deleted: list[str] = []
+        skipped: list[dict[str, str]] = []
+        for raw_id in ids:
+            job_id = str(raw_id)
+            try:
+                _delete_one_job(job_id, mode=mode)
+                deleted.append(job_id)
+            except HTTPException as exc:
+                skipped.append({"id": job_id, "reason": str(exc.detail)})
+            except Exception as exc:  # pragma: no cover - 방어적
+                skipped.append({"id": job_id, "reason": sanitize_error(str(exc))})
+        return JSONResponse({"deleted": deleted, "skipped": skipped, "mode": mode})
+
+    @app.delete("/api/jobs/{job_id}")
+    def delete_job(job_id: str, mode: str = "trash") -> JSONResponse:
+        normalized = (mode or "trash").strip().lower()
+        if normalized not in {"permanent", "trash"}:
+            raise HTTPException(status_code=400, detail="mode 는 permanent 또는 trash 여야 합니다.")
+        _delete_one_job(job_id, mode=normalized)
+        return JSONResponse({"id": job_id, "mode": normalized})
+
     @app.post("/api/jobs/{job_id}/rerun")
     def rerun(request: Request, job_id: str) -> JSONResponse:
         require_json_content_type(request)
@@ -663,6 +696,9 @@ def sync_saved_jobs() -> None:
     for job_dir in sorted(WEB_ROOT.iterdir()):
         if not job_dir.is_dir() or job_dir.name in known:
             continue
+        # _trash, _backup 등 underscore prefix 디렉토리는 잡 디렉토리가 아님
+        if job_dir.name.startswith("_"):
+            continue
         result = job_dir / "result.pptx"
         report = job_dir / "artifacts" / "report.json"
         montage = job_dir / "artifacts" / "montage.png"
@@ -764,6 +800,49 @@ def require_job(job_id: str) -> JobState:
     if job is None:
         raise HTTPException(status_code=404, detail="작업을 찾을 수 없습니다.")
     return job
+
+
+TRASH_DIR_NAME = "_trash"
+
+
+def _job_dir_for(job: JobState) -> Path:
+    """잡의 실제 디렉토리. report/output/workdir/input_path 중 가장 신뢰할 수 있는 경로에서 추정."""
+    candidates: list[Path] = []
+    for src in (job.output, job.report, job.workdir, job.input_path):
+        if src:
+            candidates.append(Path(src))
+    for path in candidates:
+        # 잡 디렉토리는 WEB_ROOT/<id>
+        for ancestor in path.parents:
+            if ancestor.parent == WEB_ROOT and ancestor.name == job.id:
+                return ancestor
+    return WEB_ROOT / job.id
+
+
+def _delete_one_job(job_id: str, *, mode: str) -> None:
+    job = require_job(job_id)
+    if job.status in {"running", "queued", "cancelling"}:
+        raise HTTPException(
+            status_code=409,
+            detail="진행 중인 작업은 삭제할 수 없습니다. 먼저 취소하세요.",
+        )
+    job_dir = _job_dir_for(job)
+    if mode == "trash":
+        trash_root = WEB_ROOT / TRASH_DIR_NAME
+        trash_root.mkdir(parents=True, exist_ok=True)
+        if job_dir.exists():
+            target = trash_root / job.id
+            if target.exists():
+                # 동일 id가 trash에 이미 있으면 timestamp 접미사로 회피
+                target = trash_root / f"{job.id}.{int(time.time())}"
+            shutil.move(str(job_dir), str(target))
+    else:  # permanent
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+    # 메모리 dict + future 정리
+    with jobs_lock:
+        jobs.pop(job_id, None)
+        futures.pop(job_id, None)
 
 
 SERIALIZABLE_JOB_FIELDS = (
@@ -1512,7 +1591,7 @@ INDEX_HTML = r"""<!doctype html>
       border-radius: 8px;
       padding: 11px 12px;
       color: var(--muted);
-      background: var(--surface-3);
+      background: var(--surface-2);
       font-size: 12px;
       line-height: 1.5;
     }
@@ -1613,6 +1692,65 @@ INDEX_HTML = r"""<!doctype html>
       display: block;
     }
     .job-thumb.is-missing { display: none; }
+    .job-check {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      margin-top: 4px;
+      accent-color: var(--blue);
+      cursor: pointer;
+    }
+    .jobs-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-2);
+    }
+    .jobs-toolbar-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .jobs-toolbar-check input { accent-color: var(--blue); }
+    .pager {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      padding: 10px 0;
+    }
+    .pager-arrow,
+    .pager-page {
+      min-width: 34px;
+      height: 32px;
+      padding: 0 10px;
+      border: 1px solid var(--field-border);
+      border-radius: 6px;
+      background: var(--surface-2);
+      color: var(--ink);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .pager-arrow:disabled,
+    .pager-page:disabled { opacity: 0.4; cursor: default; }
+    .pager-page.is-active {
+      background: var(--blue);
+      color: #fff;
+      border-color: var(--blue);
+    }
+    .pager-ellipsis {
+      padding: 0 6px;
+      color: var(--muted);
+    }
     .job-body {
       flex: 1 1 auto;
       min-width: 0;
@@ -1966,18 +2104,56 @@ INDEX_HTML = r"""<!doctype html>
       align-items: center;
       justify-content: center;
       padding: 24px;
-      background: rgba(15, 23, 42, .46);
+      /* 다크모드 기본 — 다크 페이지 위에서 모달이 명확히 떠보이도록 진한 backdrop */
+      background: rgba(2, 6, 14, .68);
+      backdrop-filter: blur(2px);
       z-index: 20;
+    }
+    body[data-theme="light"] .modal-backdrop {
+      background: rgba(15, 23, 42, .40);
     }
     .modal-backdrop.open { display: flex; }
     .modal {
       width: min(980px, 96vw);
       max-height: 88vh;
       overflow: auto;
-      border-radius: 8px;
+      border-radius: 10px;
+      background: var(--surface-3);
+      border: 1px solid color-mix(in srgb, var(--line) 80%, var(--ink) 20%);
+      box-shadow: 0 32px 90px rgba(0, 0, 0, .55), 0 0 0 1px color-mix(in srgb, var(--blue) 14%, transparent);
+    }
+    body[data-theme="light"] .modal {
       background: var(--surface-2);
       box-shadow: 0 24px 80px var(--shadow);
     }
+    .modal.settings-modal {
+      width: min(640px, 96vw);
+    }
+    .settings-tabs {
+      display: flex;
+      gap: 2px;
+      border-bottom: 1px solid var(--line);
+      margin: -4px -4px 14px;
+    }
+    .settings-tab {
+      flex: 1 1 auto;
+      padding: 10px 14px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      text-align: center;
+    }
+    .settings-tab:hover { color: var(--ink); }
+    .settings-tab.is-active {
+      color: var(--ink);
+      border-bottom-color: var(--blue);
+    }
+    .settings-tab-pane.is-hidden { display: none; }
     .modal-head {
       position: sticky;
       top: 0;
@@ -2052,6 +2228,7 @@ INDEX_HTML = r"""<!doctype html>
     <div class="brand"><span class="brand-mark" aria-hidden="true">S</span><span>Star-Slide</span></div>
     <div class="tagline">NotebookLM에서 생성한 이미지 슬라이드를 <strong>편집 가능한 PPTX</strong>로 변환</div>
     <div class="header-actions">
+      <button id="settingsButton" class="secondary theme-toggle" type="button" title="설정">⚙ 설정</button>
       <button id="themeToggle" class="secondary theme-toggle" type="button">라이트 모드</button>
     </div>
   </header>
@@ -2073,107 +2250,85 @@ INDEX_HTML = r"""<!doctype html>
         <div class="upload-progress-bar"><div></div></div>
         <div class="upload-progress-label hint">업로드 0%</div>
       </div>
-      <div id="systemCheck" class="system-box">
-        <div class="hint">시스템 의존성을 확인하는 중입니다.</div>
-      </div>
-
       <div class="setting-box">
         <h2>LLM Provider</h2>
         <div class="info-box">
           LLM은 슬라이드 이미지를 layout JSON으로 해석하고 큰 이미지 영역을 판단하는 데 사용됩니다.
           기본 흐름은 슬라이드당 약 2회 호출이며, retry 설정에 따라 추가 호출될 수 있습니다.
         </div>
-        <div class="provider-controls">
+        <div class="provider-controls" style="grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);">
           <div>
-            <label for="provider">Provider</label>
-            <select id="provider"></select>
+            <label for="s_provider">Provider</label>
+            <select id="s_provider"></select>
           </div>
-          <button id="addCustom" class="secondary" type="button">Custom 추가</button>
-        </div>
-        <div id="customProviderFields" class="custom-provider-fields" hidden>
-          <label for="customName">Custom Name</label>
-          <input id="customName" placeholder="예: 사내 프록시" />
-          <div class="actions provider-field-actions">
-            <button id="deleteCustom" class="secondary" type="button">Custom 삭제</button>
+          <div>
+            <label for="s_model">Model</label>
+            <input id="s_model" list="modelOptions" placeholder="gpt-5.5 (로컬은 자동 조회)" autocomplete="off" />
           </div>
         </div>
-        <label for="baseUrl">Base URL</label>
-        <input id="baseUrl" placeholder="http://localhost:8300/v1" />
-        <label for="model">Model</label>
-        <div class="api-key-row">
-          <input id="model" list="modelOptions" placeholder="gpt-5.5 (로컬은 자동 조회)" autocomplete="off" />
-          <button id="refreshModels" class="secondary" type="button" title="사용 가능한 모델 목록 다시 가져오기">↻ 모델</button>
+        <div class="hint" style="margin-top:6px;">
+          Base URL · API Key · Custom Provider 관리 · 시스템 상태는 우측 상단 <strong>⚙ 설정</strong>에서.
         </div>
-        <datalist id="modelOptions"></datalist>
-        <div id="modelChips" class="model-chips" hidden></div>
-        <div id="modelHint" class="hint"></div>
-        <label for="apiKey">API Key</label>
-        <div class="api-key-row">
-          <input id="apiKey" type="password" placeholder="sk-... (Ollama 등 로컬은 비워두세요)" />
-          <button id="testLlm" class="secondary" type="button">테스트</button>
-        </div>
-        <div id="testResult" class="test-result hint" hidden></div>
-        <div id="providerHint" class="hint"></div>
       </div>
 
       <div class="setting-box">
         <h2>변환 옵션</h2>
         <div class="row">
           <div>
-            <label for="timeout">Timeout</label>
-            <input id="timeout" type="number" min="60" step="30" />
+            <label for="s_timeout">Timeout</label>
+            <input id="s_timeout" type="number" min="60" step="30" />
           </div>
           <div>
             <div class="label-row">
-              <label for="retries">Retries</label>
+              <label for="s_retries">Retries</label>
               <span class="help" title="layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수입니다. 기본 2회이며, 네트워크/LLM 일시 실패를 흡수합니다.">?</span>
             </div>
-            <input id="retries" type="number" min="0" step="1" />
+            <input id="s_retries" type="number" min="0" step="1" />
           </div>
         </div>
         <div class="row">
           <div>
             <div class="label-row">
-              <label for="llmParallel">LLM 병렬 수</label>
-              <span class="help" title="여러 슬라이드의 LLM 분석 요청을 동시에 몇 개까지 실행할지 정합니다. 값이 높으면 빠르지만 API rate limit이나 로컬 프록시 부하가 커질 수 있습니다.">?</span>
+              <label for="s_llmParallel">LLM 병렬 수</label>
+              <span class="help" title="여러 슬라이드의 LLM 분석 요청을 동시에 몇 개까지 실행할지 정합니다.">?</span>
             </div>
-            <input id="llmParallel" type="number" min="1" max="10" step="1" />
+            <input id="s_llmParallel" type="number" min="1" max="10" step="1" />
           </div>
           <div>
             <div class="label-row">
-              <label for="fontScale">폰트 배율</label>
-              <span class="help" title="PPTX로 다시 렌더링할 때 모든 편집 가능 텍스트 크기에 곱하는 값입니다. 작게 보이면 1.0에 가깝게, 커 보이면 0.9 이하로 낮춥니다.">?</span>
+              <label for="s_fontScale">폰트 배율</label>
+              <span class="help" title="PPTX로 다시 렌더링할 때 모든 편집 가능 텍스트 크기에 곱하는 값입니다.">?</span>
             </div>
-            <input id="fontScale" type="number" min="0.5" max="1.5" step="0.01" />
+            <input id="s_fontScale" type="number" min="0.5" max="1.5" step="0.01" />
           </div>
         </div>
         <div class="row">
           <div>
             <div class="label-row">
-              <label for="hybridAllowedDelta">Hybrid 허용 diff</label>
-              <span class="help" title="원본 대비 픽셀 차이(diff)가 vector보다 이 값만큼 더 나빠도 hybrid를 선택합니다. 0이면 hybrid가 같거나 더 좋을 때만 선택합니다. 값을 키우면 이미지 덩어리 보존을 더 선호합니다.">?</span>
+              <label for="s_hybridAllowedDelta">Hybrid 허용 diff</label>
+              <span class="help" title="원본 대비 픽셀 차이(diff)가 vector보다 이 값만큼 더 나빠도 hybrid를 선택합니다.">?</span>
             </div>
-            <input id="hybridAllowedDelta" type="number" step="0.1" />
+            <input id="s_hybridAllowedDelta" type="number" step="0.1" />
           </div>
           <div></div>
         </div>
         <div>
           <div class="label-row">
-            <label for="layoutFailureMode">Layout 실패 처리</label>
-            <span class="help" title="재시도 후에도 layout JSON이 생성되지 않은 슬라이드 처리 방식입니다. 이미지 폴백은 해당 슬라이드를 원본 이미지 한 장으로 넣어 전체 변환을 완료하고, 실패 중단은 LLM 상태 확인을 위해 작업을 멈춥니다.">?</span>
+            <label for="s_layoutFailureMode">Layout 실패 처리</label>
+            <span class="help" title="재시도 후에도 layout JSON이 생성되지 않은 슬라이드 처리 방식.">?</span>
           </div>
-          <select id="layoutFailureMode">
+          <select id="s_layoutFailureMode">
             <option value="image_fallback">이미지 폴백으로 계속</option>
             <option value="fail">작업 실패로 중단</option>
           </select>
         </div>
-        <label class="checkline"><input id="sam3" type="checkbox" /> SAM3 bbox refinement <span class="help" title="LLM이 찾은 큰 이미지 영역의 경계를 SAM3로 더 정확히 보정합니다. 켜면 느려질 수 있지만 이미지 객체 crop 품질이 좋아질 수 있습니다.">?</span></label>
-        <label class="checkline"><input id="editableEmbeddedText" type="checkbox" /> 큰 이미지 내부 텍스트를 편집 가능하게 유지 <span class="help" title="큰 그림/도식 내부의 텍스트도 PowerPoint 텍스트로 추출하려고 시도합니다. 켜면 편집성은 높아지지만 배경 지우기 흔적이 생길 수 있습니다. 일부 복잡한 패널은 자동으로 이미지 보존을 우선합니다.">?</span></label>
-        <label class="checkline"><input id="keepIntermediates" type="checkbox" /> 큰 중간 산출물 보존 <span class="help" title="QA 렌더 PNG, SAM crop, overlay, 임시 asset 등 디버깅용 파일을 모두 남깁니다. 기본은 꺼짐이며 최종 산출물과 리포트만 보존해 용량을 줄입니다.">?</span></label>
+        <label class="checkline"><input id="s_sam3" type="checkbox" /> SAM3 bbox refinement</label>
+        <label class="checkline"><input id="s_editableEmbeddedText" type="checkbox" /> 큰 이미지 내부 텍스트 편집 가능 유지</label>
+        <label class="checkline"><input id="s_keepIntermediates" type="checkbox" /> 큰 중간 산출물 보존</label>
       </div>
 
-      <div class="actions">
-        <button id="save" class="secondary">설정 저장</button>
+      <div class="hint" style="margin-top:14px;">
+        ⓘ 사이드바 변경은 이 세션에만 적용됩니다. 영구 저장은 우측 상단 <strong>⚙ 설정</strong>.
       </div>
     </aside>
     <main>
@@ -2190,6 +2345,117 @@ INDEX_HTML = r"""<!doctype html>
         <button class="secondary" onclick="closeModal()" aria-label="모달 닫기">닫기</button>
       </div>
       <div id="modalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!--
+    영구 설정 영역 — 평소에는 hidden 상태로 body 끝에 보관되고,
+    ⚙ 설정 모달이 열리면 이 element 통째로 모달 본문으로 이동했다가
+    closeModal 시 다시 body 로 복귀한다. 그 결과 기존 ID(#provider, #model,
+    #baseUrl, #apiKey, #timeout, ...) 는 항상 DOM 에 단 하나만 존재해 기존
+    JS 로직을 그대로 재사용한다. 사이드바는 이와 별도로 #s_* prefix 의 세션
+    한정 사본을 가진다.
+  -->
+  <div id="advancedSettingsHost" hidden>
+    <div class="setting-box settings-tab-pane" data-tab="system" style="border-top:0;margin-top:0;padding-top:0;">
+      <div id="systemCheck" class="system-box">
+        <div class="hint">시스템 의존성을 확인하는 중입니다.</div>
+      </div>
+    </div>
+
+    <div class="setting-box settings-tab-pane" data-tab="provider" style="border-top:0;margin-top:0;padding-top:0;">
+      <h2>LLM Provider</h2>
+      <div class="info-box">
+        LLM은 슬라이드 이미지를 layout JSON으로 해석하고 큰 이미지 영역을 판단하는 데 사용됩니다.
+        기본 흐름은 슬라이드당 약 2회 호출이며, retry 설정에 따라 추가 호출될 수 있습니다.
+      </div>
+      <div class="provider-controls">
+        <div>
+          <label for="provider">Provider</label>
+          <select id="provider"></select>
+        </div>
+        <button id="addCustom" class="secondary" type="button">Custom 추가</button>
+      </div>
+      <div id="customProviderFields" class="custom-provider-fields" hidden>
+        <label for="customName">Custom Name</label>
+        <input id="customName" placeholder="예: 사내 프록시" />
+        <div class="actions provider-field-actions">
+          <button id="deleteCustom" class="secondary" type="button">Custom 삭제</button>
+        </div>
+      </div>
+      <label for="baseUrl">Base URL</label>
+      <input id="baseUrl" placeholder="http://localhost:8300/v1" />
+      <label for="model">Model</label>
+      <div class="api-key-row">
+        <input id="model" list="modelOptions" placeholder="gpt-5.5 (로컬은 자동 조회)" autocomplete="off" />
+        <button id="refreshModels" class="secondary" type="button" title="사용 가능한 모델 목록 다시 가져오기">↻ 모델</button>
+      </div>
+      <datalist id="modelOptions"></datalist>
+      <div id="modelChips" class="model-chips" hidden></div>
+      <div id="modelHint" class="hint"></div>
+      <label for="apiKey">API Key</label>
+      <div class="api-key-row">
+        <input id="apiKey" type="password" placeholder="sk-... (Ollama 등 로컬은 비워두세요)" />
+        <button id="testLlm" class="secondary" type="button">테스트</button>
+      </div>
+      <div id="testResult" class="test-result hint" hidden></div>
+      <div id="providerHint" class="hint"></div>
+    </div>
+
+    <div class="setting-box settings-tab-pane" data-tab="options" style="border-top:0;margin-top:0;padding-top:0;">
+      <h2>변환 옵션</h2>
+      <div class="row">
+        <div>
+          <label for="timeout">Timeout</label>
+          <input id="timeout" type="number" min="60" step="30" />
+        </div>
+        <div>
+          <div class="label-row">
+            <label for="retries">Retries</label>
+            <span class="help" title="layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수.">?</span>
+          </div>
+          <input id="retries" type="number" min="0" step="1" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label-row">
+            <label for="llmParallel">LLM 병렬 수</label>
+            <span class="help" title="여러 슬라이드의 LLM 분석을 동시에 몇 개까지 실행할지.">?</span>
+          </div>
+          <input id="llmParallel" type="number" min="1" max="10" step="1" />
+        </div>
+        <div>
+          <div class="label-row">
+            <label for="fontScale">폰트 배율</label>
+            <span class="help" title="PPTX로 렌더링할 때 텍스트 크기 배율.">?</span>
+          </div>
+          <input id="fontScale" type="number" min="0.5" max="1.5" step="0.01" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label-row">
+            <label for="hybridAllowedDelta">Hybrid 허용 diff</label>
+            <span class="help" title="원본 대비 픽셀 diff 가 vector 보다 이 값만큼 더 나빠도 hybrid 선택.">?</span>
+          </div>
+          <input id="hybridAllowedDelta" type="number" step="0.1" />
+        </div>
+        <div></div>
+      </div>
+      <div>
+        <div class="label-row">
+          <label for="layoutFailureMode">Layout 실패 처리</label>
+          <span class="help" title="재시도 후에도 layout JSON이 없는 슬라이드 처리 방식.">?</span>
+        </div>
+        <select id="layoutFailureMode">
+          <option value="image_fallback">이미지 폴백으로 계속</option>
+          <option value="fail">작업 실패로 중단</option>
+        </select>
+      </div>
+      <label class="checkline"><input id="sam3" type="checkbox" /> SAM3 bbox refinement</label>
+      <label class="checkline"><input id="editableEmbeddedText" type="checkbox" /> 큰 이미지 내부 텍스트 편집 가능 유지</label>
+      <label class="checkline"><input id="keepIntermediates" type="checkbox" /> 큰 중간 산출물 보존</label>
     </div>
   </div>
 
@@ -2418,15 +2684,17 @@ INDEX_HTML = r"""<!doctype html>
         setKeystoreBanner("⚠ 저장된 API 키를 복호화할 수 없습니다 (브라우저 keystore 손상 또는 시크릿 모드). 기존 ciphertext는 보존되었으니 사용 중인 다른 브라우저에서 확인하거나, 새 키를 입력 후 저장하세요.");
       }
       loadSettings();
-      $("provider").addEventListener("change", changeProvider);
+      $("provider").addEventListener("change", changeProviderSession);
+      const sProv = document.getElementById("s_provider");
+      if (sProv) sProv.addEventListener("change", onSidebarProviderChange);
       $("addCustom").addEventListener("click", addCustomProvider);
       $("deleteCustom").addEventListener("click", deleteCustomProvider);
       $("customName").addEventListener("change", renameSelectedCustomProvider);
-      $("save").addEventListener("click", saveSettings);
       $("testLlm").addEventListener("click", testLlmSettings);
       $("refreshModels").addEventListener("click", () => fetchModelList(true));
       $("start").addEventListener("click", submit);
       $("themeToggle").addEventListener("click", toggleTheme);
+      $("settingsButton").addEventListener("click", openSettingsModal);
       document.addEventListener("keydown", handleGlobalKey);
       setupDrop();
       await loadSystemCheck();
@@ -2502,6 +2770,84 @@ INDEX_HTML = r"""<!doctype html>
         if (el.type === "checkbox") el.checked = Boolean(merged[key]);
         else el.value = merged[key] ?? "";
       }
+      // 영구 저장값을 사이드바(#s_*) 에도 채워 준다 — 새 세션의 기본값.
+      applySidebarFromStorage(saved, merged, selectedProvider);
+    }
+
+    // === 사이드바(#s_*) 동기화 헬퍼 ===
+    // 사이드바 input은 세션 한정이므로 영구 저장값에서 한 번만 채워주고,
+    // 사용자가 사이드바에서 변경해도 localStorage 는 건드리지 않는다.
+    const sidebarOptionMap = {
+      timeout: "s_timeout",
+      retries: "s_retries",
+      llmParallel: "s_llmParallel",
+      fontScale: "s_fontScale",
+      hybridAllowedDelta: "s_hybridAllowedDelta",
+      layoutFailureMode: "s_layoutFailureMode",
+      sam3: "s_sam3",
+      editableEmbeddedText: "s_editableEmbeddedText",
+      keepIntermediates: "s_keepIntermediates",
+    };
+
+    function applySidebarOptions(merged) {
+      for (const [optKey, sidebarId] of Object.entries(sidebarOptionMap)) {
+        const el = document.getElementById(sidebarId);
+        if (!el) continue;
+        if (el.type === "checkbox") el.checked = Boolean(merged[optKey]);
+        else el.value = merged[optKey] ?? "";
+      }
+    }
+
+    function renderSidebarProviderOptions(saved, selected) {
+      const builtIns = builtInProviders().map(provider =>
+        `<option value="${provider.id}">${escapeHtml(provider.label)}</option>`
+      ).join("");
+      const customs = saved.customProviders.map(provider => {
+        const label = provider.name || "Custom Provider";
+        const detail = provider.baseUrl ? ` · ${provider.baseUrl}` : "";
+        return `<option value="${customPrefix}${provider.id}">${escapeHtml(label + detail)}</option>`;
+      }).join("");
+      const sel = document.getElementById("s_provider");
+      if (!sel) return;
+      sel.innerHTML = `
+        <optgroup label="기본 Provider">${builtIns}</optgroup>
+        ${customs ? `<optgroup label="Custom Provider">${customs}</optgroup>` : ""}
+      `;
+      sel.value = selected;
+    }
+
+    function applySidebarFromStorage(saved, merged, selectedProvider) {
+      renderSidebarProviderOptions(saved, selectedProvider);
+      const cfg = lookupProviderConfig(saved, selectedProvider);
+      const sm = document.getElementById("s_model");
+      if (sm) sm.value = cfg.model || "";
+      applySidebarOptions(merged);
+    }
+
+    function lookupProviderConfig(saved, providerId) {
+      if (isCustomProvider(providerId)) {
+        const cp = findCustomProvider(saved, providerId);
+        return cp ? { baseUrl: cp.baseUrl || "", apiKey: cp.apiKey || "", model: cp.model || "" }
+                  : { baseUrl: "", apiKey: "", model: "" };
+      }
+      const stored = (saved.providers || {})[providerId] || {};
+      const preset = builtInProviders().find(p => p.id === providerId) || {};
+      return {
+        baseUrl: stored.baseUrl ?? preset.baseUrl ?? "",
+        apiKey: stored.apiKey ?? "",
+        model: stored.model ?? preset.model ?? "",
+      };
+    }
+
+    // 사이드바에서 #s_provider 변경 시 — 해당 provider의 영구 default를
+    // 사이드바 model/변환옵션 자리에 채운다 (단, 영구 저장은 안 함).
+    function onSidebarProviderChange() {
+      const saved = readStoredSettings();
+      const pid = document.getElementById("s_provider").value;
+      const cfg = lookupProviderConfig(saved, pid);
+      const sm = document.getElementById("s_model");
+      if (sm) sm.value = cfg.model || "";
+      // 변환옵션 default 는 provider 와 무관하므로 그대로 둠
     }
 
     function readStoredSettings() {
@@ -2622,6 +2968,8 @@ INDEX_HTML = r"""<!doctype html>
         ${customs ? `<optgroup label="Custom Provider">${customs}</optgroup>` : ""}
       `;
       $("provider").value = selected;
+      // 사이드바 select 도 같은 옵션·선택값으로 동기화
+      renderSidebarProviderOptions(saved, selected);
       return selected;
     }
 
@@ -2675,9 +3023,16 @@ INDEX_HTML = r"""<!doctype html>
       writeStoredSettings(saved);
       renderProviderOptions(saved.provider);
       activeProvider = saved.provider;
+      // 모달 [전체 저장] 시 → 사이드바도 새 default 로 sync
+      const merged = {...presets.defaults, ...saved.options};
+      applySidebarFromStorage(saved, merged, saved.provider);
+      // 사이드바의 [설정 저장] 버튼은 ⚙ 모달로 이동했으므로 보조 토글은 제거.
       if (showMessage) {
-        $("save").textContent = "저장됨";
-        setTimeout(() => $("save").textContent = "설정 저장", 900);
+        const btn = document.getElementById("save");
+        if (btn) {
+          btn.textContent = "저장됨";
+          setTimeout(() => { btn.textContent = "설정 저장"; }, 900);
+        }
       }
     }
 
@@ -2690,6 +3045,76 @@ INDEX_HTML = r"""<!doctype html>
       writeStoredSettings(saved);
       activeProvider = $("provider").value;
       applyProvider(false);
+    }
+
+    // 세션 한정 provider 전환 — provider select 변경만 반영하고 영구 저장은 안 한다.
+    // 영구 저장은 ⚙ 설정 모달의 [전체 저장] 버튼 또는 saveSettings()에서만.
+    function changeProviderSession() {
+      activeProvider = $("provider").value;
+      applyProvider(false);
+    }
+
+    function openSettingsModal() {
+      const html = `
+        <div class="settings-tabs" role="tablist">
+          <button type="button" class="settings-tab is-active" data-tab="system" role="tab">시스템 상태</button>
+          <button type="button" class="settings-tab" data-tab="provider" role="tab">LLM Provider</button>
+          <button type="button" class="settings-tab" data-tab="options" role="tab">변환 옵션</button>
+        </div>
+        <div id="advancedSlot"></div>
+        <div class="job-actions" style="margin-top:14px;">
+          <button id="settingsSave" class="primary">전체 저장</button>
+          <button id="settingsClose" class="secondary">닫기</button>
+        </div>
+        <div id="settingsSaveResult" class="hint" style="margin-top:10px;"></div>
+      `;
+      openModal("⚙ 설정", html);
+      // settings 모달 폭 좁히기
+      const modalEl = document.querySelector("#modalBackdrop .modal");
+      if (modalEl) modalEl.classList.add("settings-modal");
+      // 영구 설정 host 를 모달 본문 안으로 옮긴다 (DOM 이동, ID 유지)
+      const host = document.getElementById("advancedSettingsHost");
+      const slot = document.getElementById("advancedSlot");
+      if (host && slot) {
+        host.hidden = false;
+        slot.appendChild(host);
+        try { applyProvider(false); } catch (_) { /* noop */ }
+      }
+      // 초기 탭: system
+      switchSettingsTab("system");
+      // 탭 클릭 핸들러
+      document.querySelectorAll(".settings-tab").forEach(btn => {
+        btn.addEventListener("click", () => switchSettingsTab(btn.dataset.tab));
+      });
+      const saveBtn = document.getElementById("settingsSave");
+      const closeBtn = document.getElementById("settingsClose");
+      const resultEl = document.getElementById("settingsSaveResult");
+      if (saveBtn) {
+        saveBtn.addEventListener("click", () => {
+          try {
+            saveSettings(false);
+            if (resultEl) {
+              resultEl.textContent = "✔ 저장되었습니다.";
+              resultEl.style.color = "var(--teal)";
+            }
+          } catch (err) {
+            if (resultEl) {
+              resultEl.textContent = `저장 실패: ${err && err.message ? err.message : err}`;
+              resultEl.style.color = "var(--danger)";
+            }
+          }
+        });
+      }
+      if (closeBtn) closeBtn.addEventListener("click", () => closeModal());
+    }
+
+    function switchSettingsTab(name) {
+      document.querySelectorAll(".settings-tab").forEach(btn => {
+        btn.classList.toggle("is-active", btn.dataset.tab === name);
+      });
+      document.querySelectorAll(".settings-tab-pane").forEach(pane => {
+        pane.classList.toggle("is-hidden", pane.dataset.tab !== name);
+      });
     }
 
     function applyProvider(overwrite = true) {
@@ -2769,22 +3194,37 @@ INDEX_HTML = r"""<!doctype html>
       renderProviderOptions(saved.provider);
     }
 
+    // 변환 시작 시 옵션 읽기 — 사이드바(#s_*) 가 권위 (세션 한정 변경 반영).
+    // baseUrl/apiKey 는 사이드바에 없으므로 영구 저장값에서 lookup.
     function readOptions(includeProvider = false) {
-      const data = {
-        baseUrl: $("baseUrl").value.trim(),
-        model: $("model").value.trim(),
-        apiKey: $("apiKey").value,
-        timeout: Number($("timeout").value || 600),
-        retries: Number($("retries").value || 2),
-        llmParallel: Number($("llmParallel").value || 5),
-        fontScale: Number($("fontScale").value || 0.93),
-        hybridAllowedDelta: Number($("hybridAllowedDelta").value || 0),
-        layoutFailureMode: $("layoutFailureMode").value || "image_fallback",
-        sam3: $("sam3").checked,
-        editableEmbeddedText: $("editableEmbeddedText").checked,
-        keepIntermediates: $("keepIntermediates").checked,
+      const $s = (id) => document.getElementById(id);
+      const provider = $s("s_provider")?.value || $("provider").value || "local";
+      const saved = readStoredSettings();
+      const cfg = lookupProviderConfig(saved, provider);
+      const v = (id, fallback) => {
+        const el = $s(id);
+        if (!el) return fallback;
+        return el.value;
       };
-      if (includeProvider) data.provider = $("provider").value;
+      const checked = (id) => {
+        const el = $s(id);
+        return el ? el.checked : false;
+      };
+      const data = {
+        baseUrl: cfg.baseUrl,
+        model: ($s("s_model")?.value || cfg.model || "").trim(),
+        apiKey: cfg.apiKey,
+        timeout: Number(v("s_timeout", 600) || 600),
+        retries: Number(v("s_retries", 2) || 2),
+        llmParallel: Number(v("s_llmParallel", 5) || 5),
+        fontScale: Number(v("s_fontScale", 0.93) || 0.93),
+        hybridAllowedDelta: Number(v("s_hybridAllowedDelta", 0) || 0),
+        layoutFailureMode: v("s_layoutFailureMode", "image_fallback") || "image_fallback",
+        sam3: checked("s_sam3"),
+        editableEmbeddedText: checked("s_editableEmbeddedText"),
+        keepIntermediates: checked("s_keepIntermediates"),
+      };
+      if (includeProvider) data.provider = provider;
       return data;
     }
 
@@ -2961,7 +3401,8 @@ INDEX_HTML = r"""<!doctype html>
         alert("먼저 PPTX/PDF 파일을 선택하세요.");
         return;
       }
-      saveSettings(false);
+      // 변환 시작 시 자동 저장하지 않는다 — 사이드바 변경은 세션 한정.
+      // 영구 저장은 우측 상단 ⚙ 설정 모달에서 명시적으로.
       const file = selectedFile;
       $("start").disabled = true;
       $("start").textContent = "업로드 중";
@@ -3000,6 +3441,9 @@ INDEX_HTML = r"""<!doctype html>
       xhr.send(file);
     }
 
+    // 사용자가 체크한 잡 ID 집합 (페이지 전환에도 유지)
+    const selectedJobIds = new Set();
+
     async function refreshJobs() {
       const jobs = await (await fetch("/api/jobs")).json();
       const root = $("jobs");
@@ -3007,21 +3451,44 @@ INDEX_HTML = r"""<!doctype html>
         root.innerHTML = `<div class="empty">아직 실행한 작업이 없습니다.</div>`;
         teardownAllSse();
         lastJobIds = [];
+        selectedJobIds.clear();
         return;
       }
       jobs.forEach(job => jobCache.set(job.id, job));
+      // 사라진 잡 id 는 선택 집합에서 정리
+      const allIds = new Set(jobs.map(j => j.id));
+      [...selectedJobIds].forEach(id => { if (!allIds.has(id)) selectedJobIds.delete(id); });
+
       const totalPages = Math.max(1, Math.ceil(jobs.length / pageSize));
       currentPage = Math.min(currentPage, totalPages);
       const start = (currentPage - 1) * pageSize;
       const pageJobs = jobs.slice(start, start + pageSize);
-
       const pageIds = pageJobs.map(job => job.id);
       const reuse = pageIds.length === lastJobIds.length && pageIds.every((id, i) => id === lastJobIds[i]);
       if (!reuse) {
-        root.innerHTML = renderPager(jobs.length, totalPages) + pageJobs.map(renderJob).join("");
+        root.innerHTML =
+          renderJobsToolbar(jobs, pageJobs) +
+          pageJobs.map(renderJob).join("") +
+          renderPager(jobs.length, totalPages);
         lastJobIds = pageIds;
+        wireJobsToolbar();
       } else {
         pageJobs.forEach(updateJobCard);
+        // 툴바의 카운트/체크박스 상태만 갱신
+        const toolbarHtml = renderJobsToolbar(jobs, pageJobs);
+        const oldToolbar = root.querySelector(".jobs-toolbar");
+        if (oldToolbar) {
+          oldToolbar.outerHTML = toolbarHtml;
+          wireJobsToolbar();
+        }
+        // 페이저도 다시 그림 (총건수 변경 가능)
+        const oldPager = root.querySelector(".pager");
+        const pagerHtml = renderPager(jobs.length, totalPages);
+        if (oldPager) {
+          oldPager.outerHTML = pagerHtml;
+        } else if (pagerHtml) {
+          root.insertAdjacentHTML("beforeend", pagerHtml);
+        }
       }
       pageJobs.forEach(maybeSubscribeSse);
       const visibleIds = new Set(pageIds);
@@ -3030,13 +3497,78 @@ INDEX_HTML = r"""<!doctype html>
       });
     }
 
+    function renderJobsToolbar(allJobs, pageJobs) {
+      const allChecked = pageJobs.length > 0 && pageJobs.every(j => selectedJobIds.has(j.id));
+      const someChecked = pageJobs.some(j => selectedJobIds.has(j.id));
+      const indet = !allChecked && someChecked ? " data-indet=\"1\"" : "";
+      const selectedCount = selectedJobIds.size;
+      return `
+        <div class="jobs-toolbar">
+          <label class="jobs-toolbar-check">
+            <input type="checkbox" id="jobsSelectAll" ${allChecked ? "checked" : ""}${indet} />
+            <span>현재 페이지 전체 선택</span>
+          </label>
+          <span class="hint">선택 ${selectedCount}건 / 총 ${allJobs.length}건</span>
+          <span style="flex:1;"></span>
+          <button class="secondary" id="jobsDeleteSelected" ${selectedCount === 0 ? "disabled" : ""}>선택 삭제</button>
+          <button class="secondary" id="jobsDeleteAll" ${allJobs.length === 0 ? "disabled" : ""}>전체 삭제</button>
+        </div>
+      `;
+    }
+
+    function wireJobsToolbar() {
+      const all = document.getElementById("jobsSelectAll");
+      if (all) {
+        // indeterminate 상태 표현 (HTML attr로 못 그리므로 JS로)
+        if (all.dataset.indet === "1") all.indeterminate = true;
+        all.addEventListener("change", () => {
+          const pageIds = lastJobIds;
+          if (all.checked) pageIds.forEach(id => selectedJobIds.add(id));
+          else pageIds.forEach(id => selectedJobIds.delete(id));
+          refreshJobs();
+        });
+      }
+      const delSel = document.getElementById("jobsDeleteSelected");
+      if (delSel) delSel.addEventListener("click", () => askDelete([...selectedJobIds]));
+      const delAll = document.getElementById("jobsDeleteAll");
+      if (delAll) delAll.addEventListener("click", () => askDelete([...jobCache.keys()], { allLabel: true }));
+      // 카드 체크박스 위임 처리
+      document.querySelectorAll(".job-check").forEach(cb => {
+        cb.addEventListener("change", (event) => {
+          const id = event.target.dataset.jobId;
+          if (event.target.checked) selectedJobIds.add(id);
+          else selectedJobIds.delete(id);
+          refreshJobs();
+        });
+      });
+    }
+
     function renderPager(total, totalPages) {
       if (totalPages <= 1) return "";
+      // shadcn 류: < 1 ... 4 5 6 ... 10 >
+      const pages = [];
+      const range = 1;  // 현재 페이지 좌우로 보여줄 개수
+      const includes = new Set([1, totalPages, currentPage]);
+      for (let i = -range; i <= range; i += 1) includes.add(currentPage + i);
+      const sorted = [...includes].filter(p => p >= 1 && p <= totalPages).sort((a, b) => a - b);
+      let prev = 0;
+      for (const p of sorted) {
+        if (p - prev > 1) pages.push({ ellipsis: true });
+        pages.push({ page: p });
+        prev = p;
+      }
+      const buttons = pages.map(item => {
+        if (item.ellipsis) return `<span class="pager-ellipsis">…</span>`;
+        const active = item.page === currentPage ? " is-active" : "";
+        return `<button class="pager-page${active}" onclick="goToPage(${item.page})">${item.page}</button>`;
+      }).join("");
       return `
         <div class="pager">
-          <span class="hint">총 ${total}건 · ${currentPage}/${totalPages}</span>
-          <button class="secondary" ${currentPage <= 1 ? "disabled" : ""} onclick="changePage(-1)">이전</button>
-          <button class="secondary" ${currentPage >= totalPages ? "disabled" : ""} onclick="changePage(1)">다음</button>
+          <span class="hint">총 ${total}건</span>
+          <span style="flex:1;"></span>
+          <button class="pager-arrow" ${currentPage <= 1 ? "disabled" : ""} onclick="changePage(-1)">‹</button>
+          ${buttons}
+          <button class="pager-arrow" ${currentPage >= totalPages ? "disabled" : ""} onclick="changePage(1)">›</button>
         </div>
       `;
     }
@@ -3044,6 +3576,58 @@ INDEX_HTML = r"""<!doctype html>
     function changePage(delta) {
       currentPage = Math.max(1, currentPage + delta);
       refreshJobs();
+    }
+
+    function goToPage(page) {
+      currentPage = Math.max(1, page);
+      refreshJobs();
+    }
+
+    async function askDelete(ids, opts = {}) {
+      if (!ids.length) return;
+      const html = `
+        <div class="empty" style="margin-bottom:12px;">
+          <strong>${ids.length}건</strong>의 작업을 처리합니다. 방식을 선택하세요.
+        </div>
+        <div class="job-actions">
+          <button id="delTrash" class="secondary">_trash 폴더로 이동</button>
+          <button id="delPerm" class="secondary" style="border-color:var(--danger);color:var(--danger);">영구 삭제</button>
+          <button id="delCancel" class="secondary">취소</button>
+        </div>
+        <div id="delResult" class="hint" style="margin-top:10px;"></div>
+      `;
+      openModal(opts.allLabel ? "전체 삭제" : "선택 항목 삭제", html);
+      const trashBtn = document.getElementById("delTrash");
+      const permBtn = document.getElementById("delPerm");
+      const cancelBtn = document.getElementById("delCancel");
+      const resultEl = document.getElementById("delResult");
+      const run = async (mode) => {
+        if (resultEl) resultEl.textContent = "처리 중...";
+        try {
+          const response = await fetch("/api/jobs/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids, mode }),
+          });
+          if (!response.ok) throw new Error(await response.text());
+          const data = await response.json();
+          ids.forEach(id => selectedJobIds.delete(id));
+          if (resultEl) resultEl.textContent = `완료 — 삭제 ${data.deleted.length}, 스킵 ${data.skipped.length}`;
+          await refreshJobs();
+          setTimeout(() => closeModal(), 600);
+        } catch (err) {
+          if (resultEl) {
+            resultEl.textContent = `삭제 실패: ${err && err.message ? err.message : err}`;
+            resultEl.style.color = "var(--danger)";
+          }
+        }
+      };
+      if (trashBtn) trashBtn.addEventListener("click", () => run("trash"));
+      if (permBtn) permBtn.addEventListener("click", () => {
+        if (!confirm(`${ids.length}건을 디스크에서 영구 삭제합니다. 진행하시겠습니까?`)) return;
+        run("permanent");
+      });
+      if (cancelBtn) cancelBtn.addEventListener("click", () => closeModal());
     }
 
     function statusLabel(status) {
@@ -3105,8 +3689,10 @@ INDEX_HTML = r"""<!doctype html>
               ${job.options?.model ? `<span class="metric">${escapeHtml(job.options.model)}</span>` : ""}
             </div>`;
       const thumbSrc = `/api/jobs/${job.id}/thumbnail?u=${job.updated_at || job.created_at || 0}`;
+      const checked = selectedJobIds.has(job.id) ? "checked" : "";
       return `
         <section class="job" data-job-id="${job.id}" data-status="${job.status}">
+          <input type="checkbox" class="job-check" data-job-id="${job.id}" ${checked} aria-label="선택" />
           <img class="job-thumb" src="${thumbSrc}" alt="" loading="lazy" decoding="async" onerror="this.classList.add('is-missing')" />
           <div class="job-body">
             <div class="job-head">
@@ -3246,11 +3832,18 @@ INDEX_HTML = r"""<!doctype html>
     function closeModal(event) {
       if (event && event.target !== $("modalBackdrop")) return;
       const modal = document.querySelector("#modalBackdrop .modal");
+      // 설정 모달의 영구 설정 host 를 다시 body 로 복귀시킨다.
+      // (innerHTML="" 으로 통째로 날리기 전에 옮겨야 element 가 살아남는다)
+      const host = document.getElementById("advancedSettingsHost");
+      if (host && $("modalBody").contains(host)) {
+        host.hidden = true;
+        document.body.appendChild(host);
+      }
       destroyViewerInstances();
       $("modalBackdrop").classList.remove("open");
       $("modalBackdrop").setAttribute("aria-hidden", "true");
       $("modalBody").innerHTML = "";
-      modal.classList.remove("viewer-modal", "fullscreen");
+      modal.classList.remove("viewer-modal", "fullscreen", "settings-modal");
       modal.querySelector(".modal-head").style.display = "";
       viewerState.jobId = null;
       viewerState.kind = "result";
