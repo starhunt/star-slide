@@ -423,6 +423,29 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "max-age=3600"},
         )
 
+    @app.get("/api/jobs/{job_id}/pptx-file")
+    def pptx_file(job_id: str, which: str = "result") -> FileResponse:
+        """Stream the raw PPTX so the browser can render it client-side.
+
+        `which=result` returns the converted PPTX, `which=original` returns
+        the user's input. Used by the slide viewer that loads pptx-preview
+        from a CDN, eliminating the LibreOffice round-trip.
+        """
+        job = require_job(job_id)
+        try:
+            source = _resolve_source_for_pages(job, which)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if source.suffix.lower() == ".pdf":
+            media_type = "application/pdf"
+        else:
+            media_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        return FileResponse(
+            source,
+            media_type=media_type,
+            headers={"Cache-Control": "max-age=300"},
+        )
+
     @app.get("/api/jobs/{job_id}/pptx-pages")
     async def pptx_pages_index(job_id: str, which: str = "result") -> JSONResponse:
         job = require_job(job_id)
@@ -1682,6 +1705,19 @@ INDEX_HTML = r"""<!doctype html>
       border-radius: 6px;
       background: #fff;
     }
+    .viewer-stage .pptx-host {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+    .viewer-stage .pptx-host > div {
+      background: #fff;
+      box-shadow: 0 6px 28px rgba(0, 0, 0, .35);
+      border-radius: 6px;
+      overflow: hidden;
+    }
     .viewer-stage.compare {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -2099,7 +2135,20 @@ INDEX_HTML = r"""<!doctype html>
     const jobCache = new Map();
     const sseSources = new Map();
     let lastJobIds = [];
-    const viewerState = { jobId: null, filename: "", kind: "selected", slides: [], index: 0, fullscreen: false, resultPages: 0, originalPages: 0 };
+    // pptx-preview 인스턴스 추적 (모달 닫힐 때 destroy하기 위함). compare 모드는 두 개.
+    const viewerState = { jobId: null, filename: "", kind: "result", index: 0, total: 0, fullscreen: false, instances: [], pageInfos: [] };
+    let _pptxPreviewModulePromise = null;
+
+    function loadPptxPreview() {
+      if (!_pptxPreviewModulePromise) {
+        // CDN ESM. 첫 사용 시 ~수백 KB 로드, 이후 브라우저 캐시.
+        _pptxPreviewModulePromise = import("https://esm.sh/pptx-preview@1.0.2").catch(err => {
+          _pptxPreviewModulePromise = null;
+          throw err;
+        });
+      }
+      return _pptxPreviewModulePromise;
+    }
 
     const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","sam3","editableEmbeddedText","keepIntermediates"];
     const settingsKey = "starSlideSettings";
@@ -2311,7 +2360,7 @@ INDEX_HTML = r"""<!doctype html>
         closeModal();
         return;
       }
-      if (viewerState.slides.length === 0) return;
+      if (viewerState.jobId == null) return;
       if (event.key === "ArrowLeft") {
         event.preventDefault();
         moveViewer(-1);
@@ -3102,15 +3151,22 @@ INDEX_HTML = r"""<!doctype html>
     function closeModal(event) {
       if (event && event.target !== $("modalBackdrop")) return;
       const modal = document.querySelector("#modalBackdrop .modal");
+      // pptx-preview 인스턴스와 MutationObserver 정리
+      for (const info of viewerState.pageInfos) {
+        try { info?.observer?.disconnect(); } catch { /* ignore */ }
+      }
+      destroyViewerInstances();
       $("modalBackdrop").classList.remove("open");
       $("modalBackdrop").setAttribute("aria-hidden", "true");
       $("modalBody").innerHTML = "";
-      modal.classList.remove("viewer-modal");
+      modal.classList.remove("viewer-modal", "fullscreen");
       modal.querySelector(".modal-head").style.display = "";
       viewerState.jobId = null;
-      viewerState.slides = [];
+      viewerState.kind = "result";
       viewerState.index = 0;
+      viewerState.total = 0;
       viewerState.fullscreen = false;
+      viewerState.pageInfos = [];
     }
 
     const ICON_COMPARE_INLINE = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><rect x="3" y="5" width="7" height="14" rx="1"/><rect x="14" y="5" width="7" height="14" rx="1"/></svg>`;
@@ -3134,172 +3190,218 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function openCompareViewer(jobId) {
-      const job = jobCache.get(jobId);
-      const filename = job?.filename || "";
-      openModal("", `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">원본 + 변환 결과를 동시에 변환 중입니다... (캐시되어 있으면 즉시 표시됩니다)</div></div></div>`, { viewer: true, hideHeader: true });
-      try {
-        const [resultRes, origRes] = await Promise.all([
-          fetch(`/api/jobs/${jobId}/pptx-pages?which=result`),
-          fetch(`/api/jobs/${jobId}/pptx-pages?which=original`),
-        ]);
-        if (!resultRes.ok) throw new Error(`변환 결과: ${await resultRes.text() || resultRes.status}`);
-        if (!origRes.ok) throw new Error(`원본: ${await origRes.text() || origRes.status}`);
-        const resultData = await resultRes.json();
-        const origData = await origRes.json();
-        const resultPages = Number(resultData.pages || 0);
-        const originalPages = Number(origData.pages || 0);
-        const total = Math.max(resultPages, originalPages);
-        if (total <= 0) {
-          $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">표시할 슬라이드가 없습니다.</div></div></div>`;
-          return;
-        }
-        const pages = [];
-        for (let i = 1; i <= total; i++) pages.push({ page_no: i });
-        viewerState.jobId = jobId;
-        viewerState.filename = filename;
-        viewerState.kind = "compare";
-        viewerState.slides = pages;
-        viewerState.index = 0;
-        viewerState.fullscreen = false;
-        viewerState.resultPages = resultPages;
-        viewerState.originalPages = originalPages;
-        renderViewer();
-      } catch (error) {
-        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">비교 보기 실패: ${escapeHtml(error.message || error)}</div></div></div>`;
+      return openSlideViewer(jobId, "compare");
+    }
+
+    async function fetchPptxArrayBuffer(jobId, which) {
+      const response = await fetch(`/api/jobs/${jobId}/pptx-file?which=${encodeURIComponent(which)}`);
+      if (!response.ok) throw new Error(`${kindLabel(which)} PPTX: HTTP ${response.status}`);
+      return response.arrayBuffer();
+    }
+
+    function destroyViewerInstances() {
+      for (const inst of viewerState.instances) {
+        try { inst?.destroy?.(); } catch { /* ignore */ }
       }
+      viewerState.instances = [];
+      viewerState.pageInfos = [];
     }
 
     async function openSlideViewer(jobId, which) {
       const job = jobCache.get(jobId);
       const filename = job?.filename || "";
-      // 우선 모달을 띄우고 로딩 표시. PPTX 렌더링은 첫 호출 시 수 초 ~ 수십 초 걸릴 수 있음.
-      openModal("", `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">${escapeHtml(kindLabel(which))} PPTX를 슬라이드 이미지로 변환 중입니다... (처음 한 번만 시간이 걸리고 이후엔 즉시 표시됩니다)</div></div></div>`, { viewer: true, hideHeader: true });
+      destroyViewerInstances();
+      viewerState.jobId = jobId;
+      viewerState.filename = filename;
+      viewerState.kind = which;
+      viewerState.index = 0;
+      viewerState.total = 0;
+      viewerState.fullscreen = false;
+      // 모달을 먼저 띄우고 라이브러리 로드 + PPTX 다운로드를 비동기로.
+      openModal(
+        "",
+        `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">PPTX 미리보기 라이브러리 로딩 중...</div></div></div>`,
+        { viewer: true, hideHeader: true }
+      );
       try {
-        const response = await fetch(`/api/jobs/${jobId}/pptx-pages?which=${encodeURIComponent(which)}`);
-        if (!response.ok) {
-          const detail = await response.text();
-          throw new Error(detail || `HTTP ${response.status}`);
+        const [{ init }, ...buffers] = await Promise.all([
+          loadPptxPreview(),
+          ...(which === "compare"
+            ? [fetchPptxArrayBuffer(jobId, "original"), fetchPptxArrayBuffer(jobId, "result")]
+            : [fetchPptxArrayBuffer(jobId, which)]),
+        ]);
+        renderViewerShell();
+        // shell이 DOM에 생긴 뒤에 컨테이너 측정 + 라이브러리 init
+        await new Promise(r => requestAnimationFrame(() => r()));
+        if (which === "compare") {
+          const [origBuf, resultBuf] = buffers;
+          await Promise.all([
+            mountPptxInstance("compareOrigHost", origBuf, init, 0),
+            mountPptxInstance("compareResultHost", resultBuf, init, 1),
+          ]);
+        } else {
+          await mountPptxInstance("singleHost", buffers[0], init, 0);
         }
-        const data = await response.json();
-        const pageCount = Number(data.pages || 0);
-        if (pageCount <= 0) {
-          $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty">표시할 슬라이드가 없습니다.</div></div></div>`;
-          return;
-        }
-        const pages = [];
-        for (let i = 1; i <= pageCount; i++) pages.push({ page_no: i });
-        viewerState.jobId = jobId;
-        viewerState.filename = filename;
-        viewerState.kind = which;
-        viewerState.slides = pages;
-        viewerState.index = 0;
-        viewerState.fullscreen = false;
-        renderViewer();
+        // 페이지 수 추출 (양쪽 instance의 max)
+        const totals = viewerState.pageInfos.map(p => p.total).filter(n => n > 0);
+        viewerState.total = totals.length ? Math.max(...totals) : 1;
+        updateCounter();
       } catch (error) {
-        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">미리보기 실패: ${escapeHtml(error.message || error)}</div></div></div>`;
+        const msg = error?.message || String(error);
+        $("modalBody").innerHTML = `<div class="viewer"><div class="viewer-stage"><div class="viewer-empty" style="color:var(--danger);">미리보기 실패: ${escapeHtml(msg)}</div></div></div>`;
       }
     }
 
-    function renderViewer() {
-      const slide = viewerState.slides[viewerState.index];
-      if (!slide) return;
-      const jobId = viewerState.jobId;
-      const kind = viewerState.kind;
-      const total = viewerState.slides.length;
-      const idx = viewerState.index;
-      const pageNo = slide.page_no || (idx + 1);
+    async function mountPptxInstance(hostId, arrayBuffer, init, slot) {
+      const host = document.getElementById(hostId);
+      if (!host) return;
+      // 컨테이너 측정. 모달 사이즈에 맞춰 wrapper를 줄인다.
+      const w = Math.max(320, host.clientWidth);
+      const h = Math.max(180, host.clientHeight);
+      host.innerHTML = "";
+      const previewer = init(host, { width: w, height: h, mode: "slide" });
+      await previewer.preview(arrayBuffer);
+      previewer._host = host;
+      viewerState.instances[slot] = previewer;
+      applyPptxZoom(host);
+      // 라이브러리 내장 nav 버튼/페이지네이션 숨기고 페이지 정보만 추출
+      hideNativeNavAndSync(host, slot);
+      // DOM 변경 감지 — 페이지 이동/리사이즈 시에도 동기화
+      const observer = new MutationObserver(() => hideNativeNavAndSync(host, slot));
+      observer.observe(host, { childList: true, subtree: true });
+      viewerState.pageInfos[slot] = viewerState.pageInfos[slot] || { current: 1, total: 1, observer };
+      viewerState.pageInfos[slot].observer = observer;
+    }
+
+    function hideNativeNavAndSync(host, slot) {
+      const navBtns = host.querySelectorAll(".pptx-preview-wrapper-next");
+      navBtns.forEach(btn => btn.style.setProperty("display", "none", "important"));
+      const pagination = host.querySelector(".pptx-preview-wrapper-pagination");
+      if (pagination) {
+        const text = (pagination.innerText || "").trim();
+        const m = text.match(/(\d+)\s*\/\s*(\d+)/);
+        if (m) {
+          viewerState.pageInfos[slot] = viewerState.pageInfos[slot] || {};
+          viewerState.pageInfos[slot].current = parseInt(m[1], 10);
+          viewerState.pageInfos[slot].total = parseInt(m[2], 10);
+          updateCounter();
+        }
+        pagination.style.setProperty("display", "none", "important");
+      }
+    }
+
+    function clickNativeNav(host, direction) {
+      // 라이브러리 내장 prev/next 버튼은 wrapper-next 0번(다음), 1번(이전) 순서 (참조 코드 기준)
+      const navBtns = host.querySelectorAll(".pptx-preview-wrapper-next");
+      const idx = direction === "prev" ? 1 : 0;
+      const btn = navBtns[idx];
+      if (!btn) return;
+      btn.style.setProperty("display", "block");
+      btn.click();
+      btn.style.setProperty("display", "none", "important");
+    }
+
+    function moveViewer(delta) {
+      if (viewerState.kind === "compare") {
+        const origHost = document.getElementById("compareOrigHost");
+        const resultHost = document.getElementById("compareResultHost");
+        const dir = delta > 0 ? "next" : "prev";
+        if (origHost) clickNativeNav(origHost, dir);
+        if (resultHost) clickNativeNav(resultHost, dir);
+      } else {
+        const host = document.getElementById("singleHost");
+        if (host) clickNativeNav(host, delta > 0 ? "next" : "prev");
+      }
+      // 페이지 정보는 MutationObserver가 자동 갱신하지만, 즉시 카운터 보강
+      setTimeout(updateCounter, 60);
+    }
+
+    function updateCounter() {
+      const counter = document.querySelector(".viewer-title .counter");
+      if (!counter) return;
+      const slot = viewerState.kind === "compare" ? 1 : 0; // 기준은 변환 결과
+      const info = viewerState.pageInfos[slot] || { current: 1, total: viewerState.total || 1 };
+      const total = info.total || viewerState.total || 1;
+      const current = Math.min(info.current || 1, total);
+      counter.textContent = `${current} / ${total}`;
+      const footCounter = document.querySelector(".viewer-foot span");
+      if (footCounter) footCounter.textContent = `슬라이드 ${current} / ${total}`;
+      viewerState.index = current - 1;
+    }
+
+    function renderViewerShell() {
       const fullscreenIcon = viewerState.fullscreen ? ICON_MINIMIZE : ICON_FULLSCREEN;
       const fullscreenTitle = viewerState.fullscreen ? "축소 (F)" : "전체화면 (F)";
       const modal = document.querySelector("#modalBackdrop .modal");
       modal.classList.toggle("fullscreen", viewerState.fullscreen);
-
-      const isCompare = kind === "compare";
-      const stageClass = isCompare ? "viewer-stage compare" : "viewer-stage";
-
-      let stageInner;
-      if (isCompare) {
-        const origPaneInner = pageNo <= viewerState.originalPages
-          ? `<img src="/api/jobs/${jobId}/pptx-pages/${pageNo}?which=original" alt="원본 ${pageNo}" />`
-          : `<div class="missing">원본에 ${pageNo}번 슬라이드가 없습니다</div>`;
-        const resultPaneInner = pageNo <= viewerState.resultPages
-          ? `<img src="/api/jobs/${jobId}/pptx-pages/${pageNo}?which=result" alt="변환 ${pageNo}" />`
-          : `<div class="missing">변환 결과에 ${pageNo}번 슬라이드가 없습니다</div>`;
-        stageInner = `
-          <button class="viewer-nav prev" onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
-          <div class="compare-pane">
-            <div class="pane-label">원본</div>
-            <div class="pane-img-wrap">${origPaneInner}</div>
-          </div>
-          <div class="compare-pane">
-            <div class="pane-label result">변환 결과</div>
-            <div class="pane-img-wrap">${resultPaneInner}</div>
-          </div>
-          <button class="viewer-nav next" onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>`;
-      } else {
-        const imgUrl = `/api/jobs/${jobId}/pptx-pages/${pageNo}?which=${encodeURIComponent(kind)}`;
-        stageInner = `
-          <button class="viewer-nav prev" onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
-          <img src="${imgUrl}" alt="슬라이드 ${pageNo}" />
-          <button class="viewer-nav next" onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>`;
-      }
-
+      const isCompare = viewerState.kind === "compare";
       const titleBlock = isCompare
         ? `<span class="kind-pill original">원본</span><span class="kind-pill">변환 결과</span>`
-        : `<span class="kind-pill ${kind}">${escapeHtml(kindLabel(kind))}</span>`;
-      // 비교 모드는 두 장을 동시에 받기 어색하므로 다운로드 버튼은 숨긴다.
-      const downloadBtn = isCompare
-        ? ""
-        : `<button class="viewer-icon" onclick="downloadCurrentSlide()" title="이 슬라이드 이미지 다운로드">${ICON_DOWNLOAD}</button>`;
-
+        : `<span class="kind-pill ${viewerState.kind === "original" ? "original" : ""}">${escapeHtml(kindLabel(viewerState.kind))}</span>`;
+      const stage = isCompare
+        ? `
+            <button class="viewer-nav prev" onclick="moveViewer(-1)" title="이전 (←)">${ICON_PREV}</button>
+            <div class="compare-pane">
+              <div class="pane-label">원본</div>
+              <div class="pane-img-wrap"><div id="compareOrigHost" class="pptx-host"></div></div>
+            </div>
+            <div class="compare-pane">
+              <div class="pane-label result">변환 결과</div>
+              <div class="pane-img-wrap"><div id="compareResultHost" class="pptx-host"></div></div>
+            </div>
+            <button class="viewer-nav next" onclick="moveViewer(1)" title="다음 (→)">${ICON_NEXT}</button>`
+        : `
+            <button class="viewer-nav prev" onclick="moveViewer(-1)" title="이전 (←)">${ICON_PREV}</button>
+            <div id="singleHost" class="pptx-host"></div>
+            <button class="viewer-nav next" onclick="moveViewer(1)" title="다음 (→)">${ICON_NEXT}</button>`;
       $("modalBody").innerHTML = `
         <div class="viewer ${viewerState.fullscreen ? "fullscreen" : ""}">
           <div class="viewer-head">
             <div class="viewer-title">
               ${titleBlock}
               <span class="filename" title="${escapeHtml(viewerState.filename)}">${escapeHtml(viewerState.filename)}</span>
-              <span class="counter">${idx + 1} / ${total}</span>
+              <span class="counter">- / -</span>
             </div>
             <div class="viewer-actions">
-              ${downloadBtn}
+              <a class="viewer-icon" href="/api/jobs/${viewerState.jobId}/pptx-file?which=${viewerState.kind === "compare" ? "result" : viewerState.kind}" download title="PPTX 다운로드">${ICON_DOWNLOAD}</a>
               <button class="viewer-icon" onclick="toggleViewerFullscreen()" title="${fullscreenTitle}">${fullscreenIcon}</button>
               <button class="viewer-icon" onclick="closeModal()" title="닫기 (Esc)">${ICON_CLOSE}</button>
             </div>
           </div>
-          <div class="${stageClass}">
-            ${stageInner}
-          </div>
+          <div class="viewer-stage ${isCompare ? "compare" : ""}">${stage}</div>
           <div class="viewer-foot">
-            <button onclick="moveViewer(-1)" ${idx === 0 ? "disabled" : ""} title="이전 (←)">${ICON_PREV}</button>
-            <span>슬라이드 ${pageNo} / ${total}</span>
-            <button onclick="moveViewer(1)" ${idx >= total - 1 ? "disabled" : ""} title="다음 (→)">${ICON_NEXT}</button>
+            <button onclick="moveViewer(-1)" title="이전 (←)">${ICON_PREV}</button>
+            <span>슬라이드 - / -</span>
+            <button onclick="moveViewer(1)" title="다음 (→)">${ICON_NEXT}</button>
           </div>
         </div>
       `;
     }
 
-    function moveViewer(delta) {
-      const next = viewerState.index + delta;
-      if (next < 0 || next >= viewerState.slides.length) return;
-      viewerState.index = next;
-      renderViewer();
-    }
-
     function toggleViewerFullscreen() {
       viewerState.fullscreen = !viewerState.fullscreen;
-      renderViewer();
+      const modal = document.querySelector("#modalBackdrop .modal");
+      if (modal) modal.classList.toggle("fullscreen", viewerState.fullscreen);
+      const viewer = document.querySelector(".viewer");
+      if (viewer) viewer.classList.toggle("fullscreen", viewerState.fullscreen);
+      // 컨테이너 사이즈가 바뀌었으니 라이브러리 zoom 재적용
+      for (const inst of viewerState.instances) {
+        const host = inst?._host;
+        if (host) applyPptxZoom(host);
+      }
+      // shell 변경하지 않음 (라이브러리 인스턴스 유지)
     }
 
-    function downloadCurrentSlide() {
-      const slide = viewerState.slides[viewerState.index];
-      if (!slide) return;
-      const pageNo = slide.page_no || (viewerState.index + 1);
-      const url = `/api/jobs/${viewerState.jobId}/pptx-pages/${pageNo}?which=${encodeURIComponent(viewerState.kind)}`;
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${viewerState.filename || "slide"}_${pageNo}_${viewerState.kind}.png`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+    function applyPptxZoom(host) {
+      const wrapper = host.querySelector(".pptx-preview-wrapper");
+      if (!wrapper) return;
+      const baseW = parseInt(wrapper.style.width) || 960;
+      const baseH = parseInt(wrapper.style.height) || 540;
+      const cw = host.clientWidth;
+      const ch = host.clientHeight;
+      if (cw <= 0 || ch <= 0) return;
+      wrapper.style.zoom = String(Math.min(cw / baseW, ch / baseH));
+    }
     }
 
     async function openReport(jobId) {
