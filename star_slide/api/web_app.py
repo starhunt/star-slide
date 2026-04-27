@@ -1908,7 +1908,8 @@ INDEX_HTML = r"""<!doctype html>
       position: relative;
       display: grid;
       place-items: center;
-      background: #0a0e16;
+      /* 다크모드: 모달 본문 톤과 통일해 letterbox 시인성 거슬림 제거 */
+      background: var(--surface);
       overflow: hidden;
     }
     body[data-theme="light"] .viewer-stage { background: #1f2937; }
@@ -1923,12 +1924,12 @@ INDEX_HTML = r"""<!doctype html>
     .viewer-stage .pptx-host {
       width: 100%;
       height: 100%;
-      overflow: auto;
-      background: #1f2937;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      overflow: hidden;
+      background: var(--surface);
+      display: grid;
+      place-items: center;
     }
+    body[data-theme="light"] .viewer-stage .pptx-host { background: #1f2937; }
     .viewer-stage .pptx-host .pptx-preview-wrapper {
       background: #fff;
       box-shadow: 0 6px 28px rgba(0, 0, 0, .35);
@@ -1938,8 +1939,9 @@ INDEX_HTML = r"""<!doctype html>
     .viewer-stage.compare {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      padding: 4px 44px;
+      gap: 6px;
+      /* 좌우 패딩을 줄여 슬라이드를 키운다. 화살표(.viewer-nav)는 stage 가장자리에 overlay. */
+      padding: 4px 8px;
       align-items: stretch;
       justify-items: stretch;
     }
@@ -1955,6 +1957,8 @@ INDEX_HTML = r"""<!doctype html>
       height: 100%;
       min-height: 0;
       overflow: hidden;
+      display: grid;
+      place-items: center;
     }
     .viewer-stage.compare .compare-pane .pptx-host {
       width: 100%;
@@ -1964,8 +1968,8 @@ INDEX_HTML = r"""<!doctype html>
       .viewer-stage.compare {
         grid-template-columns: 1fr;
         grid-template-rows: 1fr 1fr;
-        padding: 4px 40px;
-        gap: 4px;
+        padding: 4px 8px;
+        gap: 6px;
       }
     }
     .viewer-empty { color: var(--muted); font-size: 13px; }
@@ -3937,8 +3941,20 @@ INDEX_HTML = r"""<!doctype html>
       const host = document.getElementById(hostId);
       if (!host) return;
       // hidden/측정전이면 0이 되므로 폴백 (AITechHub 동일).
-      const w = host.clientWidth || 960;
-      const h = host.clientHeight || 540;
+      const cw = host.clientWidth || 960;
+      const ch = host.clientHeight || 540;
+      // 슬라이드는 16:9 — host 비율과 다르면 더 작은 쪽에 맞춰 wrapper 크기 결정.
+      // 이렇게 하면 라이브러리 wrapper 자체가 16:9 가 되어 host 안의
+      // letterbox 가 stage 배경(var(--surface))과 자연스럽게 섞인다.
+      const target = 16 / 9;
+      let w, h;
+      if (cw / ch > target) {
+        h = ch;
+        w = Math.round(ch * target);
+      } else {
+        w = cw;
+        h = Math.round(cw / target);
+      }
       host.innerHTML = "";
       const previewer = init(host, { width: w, height: h, mode: "slide" });
       await previewer.preview(arrayBuffer);
