@@ -33,7 +33,7 @@ class NotebookLmAutoOptions:
     api_key: str = ""
     timeout_sec: float = 600.0
     retries: int = 2
-    use_sam3: bool = True
+    use_sam3: bool = False
     hybrid_allowed_delta: float = 0.0
     min_objects: int = 3
     llm_parallel: int = 5
@@ -41,6 +41,12 @@ class NotebookLmAutoOptions:
     font_scale: float = 0.93
     keep_intermediates: bool = False
     layout_failure_mode: str = "image_fallback"
+    # 워터마크-only 모드:
+    #   "off"    — 사용 안 함 (기본 전체 변환)
+    #   "fast"   — 우측 하단 영역을 가장자리 평균색으로 단순 페인트 (수초)
+    #   "detail" — LaMa 인페인팅으로 자연스럽게 복원 (슬라이드당 1~3초 추가,
+    #              첫 호출 시 ~196MB 모델 다운로드)
+    watermark_mode: str = "off"
 
 
 @dataclass(frozen=True)
@@ -440,6 +446,107 @@ def collect_artifacts(
     }
 
 
+def _build_image_only_pptx(images: list[Path], output_path: Path) -> None:
+    """슬라이드당 단일 PICTURE shape 로 16:9 PPTX 를 빌드한다."""
+    from pptx import Presentation
+    from pptx.util import Emu
+
+    prs = Presentation()
+    # 16:9 — PowerPoint Widescreen 기본 (12192000 x 6858000 EMU)
+    prs.slide_width = Emu(12192000)
+    prs.slide_height = Emu(6858000)
+    blank_layout = prs.slide_layouts[6]
+    for img_path in images:
+        slide = prs.slides.add_slide(blank_layout)
+        slide.shapes.add_picture(
+            str(img_path), 0, 0, width=prs.slide_width, height=prs.slide_height,
+        )
+    prs.save(str(output_path))
+
+
+def _convert_watermark_only(
+    *,
+    input_path: Path,
+    output_path: Path,
+    workdir: Path,
+    images: list[Path],
+    emit: Callable[[str, float], None],
+    check_cancel: Callable[[], None],
+    pre_cleanup_hook: Callable[[Path], None] | None,
+    keep_intermediates: bool,
+    detail: bool = False,
+) -> NotebookLmAutoResult:
+    """LLM 호출 없이 우측 하단 워터마크 영역만 제거해 PPTX 를 빌드한다.
+
+    detail=True 면 LaMa 인페인팅으로 배경을 자연스럽게 복원하고,
+    detail=False 면 가장자리 평균색으로 단순 페인트한다 (수초).
+    """
+    from star_slide.input.watermark_remover import (
+        remove_watermarks,
+        remove_watermarks_inpaint,
+    )
+
+    check_cancel()
+    if detail:
+        emit("NotebookLM 워터마크 제거 중 (디테일 모드, LaMa 인페인팅)", 30)
+        remove_watermarks_inpaint(images)
+    else:
+        emit("NotebookLM 워터마크 제거 중 (빠른 모드)", 30)
+        remove_watermarks(images)
+
+    # 미리보기/썸네일 호환을 위해 마스킹된 이미지를 qa_selected 에도 복사한다.
+    qa_selected_dir = workdir / "qa_selected"
+    qa_selected_dir.mkdir(parents=True, exist_ok=True)
+    for src in images:
+        dst = qa_selected_dir / src.name
+        with contextlib.suppress(OSError):
+            shutil.copy2(src, dst)
+
+    check_cancel()
+    emit("PPTX 빌드 중", 70)
+    _build_image_only_pptx(images, output_path)
+
+    # 간단 report 작성 (web 의 report-summary 가 빈 객체라도 파싱할 수 있도록 최소 구조)
+    artifact_dir = workdir.parent / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    report_path = artifact_dir / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "input": str(input_path),
+                "output": str(output_path),
+                "mode": "watermark_only",
+                "slides": len(images),
+                "selected_qa": [],
+                "vector_qa": [],
+                "hybrid_qa": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    # cleanup 직전 hook (web_app 의 썸네일/캐시 prefetch)
+    if pre_cleanup_hook is not None and workdir.exists():
+        with contextlib.suppress(Exception):
+            pre_cleanup_hook(workdir)
+    if not keep_intermediates and workdir.exists():
+        shutil.rmtree(workdir)
+
+    emit("완료", 100)
+    return NotebookLmAutoResult(
+        output=output_path,
+        workdir=workdir,
+        selected_layout_dir=workdir,  # 빠른 모드는 layout 산출물 없음 — 더미 경로
+        report=report_path,
+        vector_pptx=output_path,
+        hybrid_pptx=output_path,
+        artifact_dir=artifact_dir,
+        montage=None,
+    )
+
+
 def convert_notebooklm_auto(
     *,
     input_path: Path,
@@ -473,6 +580,20 @@ def convert_notebooklm_auto(
     if not images:
         raise RuntimeError(f"no slide images extracted from {input_path}")
     images = sorted(images)
+
+    # 워터마크-only 모드 — LLM/SAM 호출 없이 곧장 PPTX 빌드.
+    if options.watermark_mode in {"fast", "detail"}:
+        return _convert_watermark_only(
+            input_path=input_path,
+            output_path=output_path,
+            workdir=workdir,
+            images=images,
+            emit=emit,
+            check_cancel=check_cancel,
+            pre_cleanup_hook=pre_cleanup_hook,
+            keep_intermediates=options.keep_intermediates,
+            detail=(options.watermark_mode == "detail"),
+        )
 
     check_cancel()
     emit("Vision LLM layout JSON 생성 중", 10)

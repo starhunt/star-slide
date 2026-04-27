@@ -122,7 +122,7 @@ Or:
 --api-key "..."
 ```
 
-If your local provider, such as Star-CliProxy, handles authentication itself, the API key can be left blank or set to whatever placeholder the proxy expects.
+Star-CliProxy requires its own internally issued API key (an authentication token minted by the proxy itself, not an external pay-per-use LLM key), so you must enter that key in Star-Slide as well. Local LLMs that need no authentication, such as Ollama, can be used with the API key field left blank.
 
 ## Quick Start
 
@@ -185,14 +185,14 @@ http://127.0.0.1:5400
 Web app features:
 
 - Drag-and-drop PPTX/PDF upload
-- OpenAI, Gemini, Local Proxy, and multiple custom OpenAI-compatible providers
-- Store and reload provider name, Base URL, model, and API key
-- Configure timeout, retries, LLM parallelism, font scale, SAM3 usage, embedded text handling, and intermediate artifact retention
-- Start asynchronous conversion jobs
-- Track phase-by-phase progress and paginated job history
-- Dark/light mode, dark by default
-- Download completed PPTX
-- QA montage preview modal
+- OpenAI, Gemini, Local Proxy, and multiple custom OpenAI-compatible providers (left sidebar)
+- Top-right ⚙ **Settings modal** (System status / LLM Provider / Conversion options tabs) for persistently saving provider name, Base URL, model, API key, and conversion-option defaults
+- Sidebar Provider/Model and conversion options are **session-scoped** — changes apply to that run only and the saved defaults are preserved
+- Configure timeout, retries, LLM parallelism, font scale, SAM3 usage, embedded-text handling, intermediate artifact retention, and a **watermark-only mode (off / fast / detail)**
+- Start asynchronous conversion jobs with SSE-based phase progress
+- Job list: first-slide thumbnails, checkbox-based **bulk / individual deletion** (permanent or move to `_trash`), numeric-page pagination
+- Dark/light mode (dark by default)
+- Download completed PPTX and preview slides (including side-by-side compare against the original, rendered client-side via pptx-preview)
 - Conversion report modal and raw JSON download
 - Layout JSON summary modal and layout JSON zip download
 
@@ -236,7 +236,7 @@ uv run star-slide notebooklm run INPUT.pdf -o OUTPUT.pptx [options]
 | `--retries` | `2` | Retry count for broken JSON, missing layouts, or transient LLM failures |
 | `--llm-parallel` | `5` | Parallel LLM calls for layout/raster-group analysis |
 | `--layout-failure-mode` | `image_fallback` | Use a full-slide image fallback after exhausted retries, or set `fail` to stop the job |
-| `--sam3 / --no-sam3` | `--sam3` | Use SAM3 bbox refinement |
+| `--sam3 / --no-sam3` | `--no-sam3` | Use SAM3 bbox refinement (off by default — opt-in quality mode) |
 | `--hybrid-allowed-delta` | `0.0` | Allow hybrid even if its diff is worse than vector by this amount |
 | `--editable-embedded-text / --rasterize-embedded-text` | `--editable-embedded-text` | Keep text inside large image groups editable when possible |
 | `--font-scale` | `0.93` | Global text size multiplier for PPTX rendering |

@@ -122,7 +122,7 @@ export VISION_PROXY_API_KEY="..."
 --api-key "..."
 ```
 
-Star-CliProxy처럼 로컬에서 자체 인증을 처리하는 provider라면 API key를 비워두거나 프록시에서 요구하는 임의의 값을 사용할 수 있습니다.
+Star-CliProxy는 프록시 자체에서 발급한 내부 API key를 반드시 요구합니다 (외부 LLM 종량제 key가 아니라, 프록시가 인증용으로 발급하는 토큰). 따라서 Star-Slide에서도 그 key를 입력해야 합니다. 반대로 Ollama 같이 인증이 필요 없는 로컬 LLM은 API key를 비워두면 됩니다.
 
 ## 빠른 실행
 
@@ -182,14 +182,14 @@ http://127.0.0.1:5400
 웹앱에서 가능한 작업:
 
 - PPTX/PDF 드래그 앤 드롭 업로드
-- OpenAI, Gemini, Local Proxy, 여러 Custom OpenAI-compatible provider 선택
-- provider별 이름, Base URL, 모델명, API key 저장 및 자동 불러오기
-- timeout, retry, LLM 병렬 수, 폰트 배율, SAM3 사용 여부, embedded text 처리, 중간 산출물 보존 여부 조정
-- 비동기 변환 작업 시작
-- 단계별 진행 상태 확인 및 작업 목록 페이징
-- 다크/라이트 모드 전환, 기본 다크 모드
-- 완료 후 PPTX 다운로드
-- QA montage 모달 미리보기
+- OpenAI, Gemini, Local Proxy, 여러 Custom OpenAI-compatible provider 선택 (좌측 사이드바)
+- 우측 상단 ⚙ **설정 모달**(시스템 상태 / LLM Provider / 변환 옵션 탭)에서 provider별 이름, Base URL, 모델명, API key, 변환 옵션 default 영구 저장
+- 사이드바의 Provider/Model 및 변환 옵션은 **세션 한정** 변경 — 그 변환에만 적용되고 default 는 유지
+- timeout, retry, LLM 병렬 수, 폰트 배율, SAM3 사용 여부, embedded text 처리, 중간 산출물 보존, **워터마크만 제거 모드(off / fast / detail)** 조정
+- 비동기 변환 작업 시작 + SSE 기반 단계별 진행 상태
+- 작업 목록: 첫 슬라이드 썸네일, 체크박스 기반 **일괄/개별 삭제**(영구 삭제 또는 `_trash` 폴더로 이동), 숫자 페이지 페이지네이션
+- 다크/라이트 모드 전환 (기본 다크)
+- 완료 후 PPTX 다운로드, 슬라이드 미리보기 (원본/변환 결과 비교 보기 포함, 클라이언트사이드 pptx-preview)
 - 변환 리포트 모달 확인 및 원본 JSON 다운로드
 - Layout JSON 요약 모달 확인 및 layout JSON zip 다운로드
 
@@ -228,7 +228,7 @@ uv run star-slide notebooklm run INPUT.pdf -o OUTPUT.pptx [options]
 | `--retries` | `2` | 깨진 JSON, layout 미생성, 일시적 LLM 실패 시 재시도 횟수 |
 | `--llm-parallel` | `5` | layout/raster group LLM 병렬 호출 수 |
 | `--layout-failure-mode` | `image_fallback` | 재시도 후에도 layout 생성이 실패한 슬라이드를 원본 이미지로 폴백할지, `fail`로 중단할지 선택 |
-| `--sam3 / --no-sam3` | `--sam3` | SAM3 bbox refinement 사용 여부 |
+| `--sam3 / --no-sam3` | `--no-sam3` | SAM3 bbox refinement 사용 여부 (기본 OFF — 필요 시 명시적으로 활성화) |
 | `--hybrid-allowed-delta` | `0.0` | hybrid가 vector보다 이 값만큼 나빠도 hybrid 선택 허용 |
 | `--editable-embedded-text / --rasterize-embedded-text` | `--editable-embedded-text` | 큰 이미지 그룹 내부 텍스트를 편집 가능 객체로 유지할지 여부 |
 | `--font-scale` | `0.93` | PPTX 렌더링 시 텍스트 크기 배율 |

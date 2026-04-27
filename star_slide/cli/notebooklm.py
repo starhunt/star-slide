@@ -43,7 +43,7 @@ def run(
         envvar="STAR_SLIDE_LLM_PARALLEL",
         help="layout/raster group LLM 호출 병렬 수",
     ),
-    sam3: bool = typer.Option(True, "--sam3/--no-sam3", envvar="STAR_SLIDE_SAM3"),
+    sam3: bool = typer.Option(False, "--sam3/--no-sam3", envvar="STAR_SLIDE_SAM3"),
     hybrid_allowed_delta: float = typer.Option(
         0.0,
         "--hybrid-allowed-delta",

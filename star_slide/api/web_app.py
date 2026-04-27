@@ -132,10 +132,11 @@ def create_app() -> FastAPI:
                 "llmParallel": 5,
                 "fontScale": 0.93,
                 "keepIntermediates": False,
-                "sam3": True,
+                "sam3": False,
                 "hybridAllowedDelta": 0.0,
                 "editableEmbeddedText": True,
                 "layoutFailureMode": "image_fallback",
+                "watermarkMode": "off",
             },
         }
 
@@ -971,10 +972,11 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             llm_parallel=int(payload.get("llmParallel") or 5),
             font_scale=float(payload.get("fontScale") or 0.93),
             keep_intermediates=bool(payload.get("keepIntermediates", False)),
-            use_sam3=bool(payload.get("sam3", True)),
+            use_sam3=bool(payload.get("sam3", False)),
             hybrid_allowed_delta=float(payload.get("hybridAllowedDelta") or 0.0),
             editable_embedded_text=bool(payload.get("editableEmbeddedText", True)),
             layout_failure_mode=str(payload.get("layoutFailureMode") or "image_fallback"),
+            watermark_mode=str(payload.get("watermarkMode") or "off"),
         )
         previews_dir = job_dir / "artifacts" / "previews"
 
@@ -2329,6 +2331,17 @@ INDEX_HTML = r"""<!doctype html>
         <label class="checkline"><input id="s_sam3" type="checkbox" /> SAM3 bbox refinement</label>
         <label class="checkline"><input id="s_editableEmbeddedText" type="checkbox" /> 큰 이미지 내부 텍스트 편집 가능 유지</label>
         <label class="checkline"><input id="s_keepIntermediates" type="checkbox" /> 큰 중간 산출물 보존</label>
+        <div>
+          <div class="label-row">
+            <label for="s_watermarkMode">워터마크만 제거 모드</label>
+            <span class="help" title="LLM/SAM 변환을 생략하고 입력 슬라이드 이미지 우측 하단의 NotebookLM 워터마크만 제거합니다. 텍스트 편집은 불가합니다.&#10;빠름: 가장자리 평균색으로 단순 페인트 (수초).&#10;디테일: LaMa 인페인팅으로 배경을 자연스럽게 복원 (슬라이드당 1~3초, 첫 호출 시 모델 다운로드).">?</span>
+          </div>
+          <select id="s_watermarkMode">
+            <option value="off">사용 안 함 (워터마크제거포함 전체변환)</option>
+            <option value="fast">빠름 — 단순 페인트</option>
+            <option value="detail">디테일 — LaMa 인페인팅</option>
+          </select>
+        </div>
       </div>
 
       <div class="hint" style="margin-top:14px;">
@@ -2460,6 +2473,17 @@ INDEX_HTML = r"""<!doctype html>
       <label class="checkline"><input id="sam3" type="checkbox" /> SAM3 bbox refinement</label>
       <label class="checkline"><input id="editableEmbeddedText" type="checkbox" /> 큰 이미지 내부 텍스트 편집 가능 유지</label>
       <label class="checkline"><input id="keepIntermediates" type="checkbox" /> 큰 중간 산출물 보존</label>
+      <div>
+        <div class="label-row">
+          <label for="watermarkMode">워터마크만 제거 모드</label>
+          <span class="help" title="LLM/SAM 생략. 빠름: 단순 페인트. 디테일: LaMa 인페인팅(시간 더 걸림).">?</span>
+        </div>
+        <select id="watermarkMode">
+          <option value="off">사용 안 함 (워터마크제거포함 전체변환)</option>
+          <option value="fast">빠름 — 단순 페인트</option>
+          <option value="detail">디테일 — LaMa 인페인팅</option>
+        </select>
+      </div>
     </div>
   </div>
 
@@ -2501,7 +2525,7 @@ INDEX_HTML = r"""<!doctype html>
       return _pptxPreviewModulePromise;
     }
 
-    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates"];
+    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode"];
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
     const customPrefix = "custom:";
@@ -2791,6 +2815,7 @@ INDEX_HTML = r"""<!doctype html>
       sam3: "s_sam3",
       editableEmbeddedText: "s_editableEmbeddedText",
       keepIntermediates: "s_keepIntermediates",
+      watermarkMode: "s_watermarkMode",
     };
 
     function applySidebarOptions(merged) {
@@ -2909,10 +2934,10 @@ INDEX_HTML = r"""<!doctype html>
         }
       }
       if (!saved.settingsVersion) {
-        saved.options = {...(saved.options || {}), sam3: true, retries: 2, layoutFailureMode: "image_fallback"};
+        saved.options = {...(saved.options || {}), retries: 2, layoutFailureMode: "image_fallback"};
       }
       if (saved.settingsVersion !== settingsVersion) {
-        saved.options = {...(saved.options || {}), sam3: true};
+        saved.options = saved.options || {};
         if (saved.options.retries === undefined || Number(saved.options.retries) < 2) {
           saved.options.retries = 2;
         }
@@ -2996,6 +3021,7 @@ INDEX_HTML = r"""<!doctype html>
         sam3: $("sam3").checked,
         editableEmbeddedText: $("editableEmbeddedText").checked,
         keepIntermediates: $("keepIntermediates").checked,
+        watermarkMode: $("watermarkMode").value || "off",
       };
     }
 
@@ -3227,6 +3253,7 @@ INDEX_HTML = r"""<!doctype html>
         sam3: checked("s_sam3"),
         editableEmbeddedText: checked("s_editableEmbeddedText"),
         keepIntermediates: checked("s_keepIntermediates"),
+        watermarkMode: v("s_watermarkMode", "off") || "off",
       };
       if (includeProvider) data.provider = provider;
       return data;
