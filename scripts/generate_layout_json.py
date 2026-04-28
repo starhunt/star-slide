@@ -82,6 +82,8 @@ Supported object.type values: text, shape, line, polyline.
 Supported background decoration types: grid, rect, line.
 Supported shape values: RECTANGLE, ROUNDED_RECTANGLE, OVAL, ARC, CHEVRON, CUBE,
 RIGHT_BRACE, RIGHT_ARROW.
+Supported dash values: SOLID, DASH, DASH_DOT, DASH_DOT_DOT, LONG_DASH,
+LONG_DASH_DOT, ROUND_DOT, SQUARE_DOT. Use ROUND_DOT for dotted lines.
 
 Strict rules:
 - Include every visible text when practical, including small labels.

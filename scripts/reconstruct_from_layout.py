@@ -27,6 +27,28 @@ from pptx.util import Emu, Pt
 
 DEFAULT_FONT = "Malgun Gothic"
 
+_DASH_ALIASES: dict[str, str] = {
+    "DOT": "ROUND_DOT",
+    "DOTTED": "ROUND_DOT",
+    "DOTS": "ROUND_DOT",
+    "ROUND": "ROUND_DOT",
+    "SQUARE": "SQUARE_DOT",
+    "DASHED": "DASH",
+    "LONGDASH": "LONG_DASH",
+    "DASHDOT": "DASH_DOT",
+    "DASHDOTDOT": "DASH_DOT_DOT",
+}
+
+
+def _resolve_dash_style(value: Any) -> Any:
+    if not isinstance(value, str):
+        return None
+    key = value.strip().upper().replace("-", "_").replace(" ", "_")
+    if not key or key == "NONE" or key == "SOLID":
+        return None
+    candidate = _DASH_ALIASES.get(key, key)
+    return getattr(MSO_LINE_DASH_STYLE, candidate, None)
+
 
 def rgb(value: str) -> RGBColor:
     cleaned = value.strip("#")
@@ -225,7 +247,9 @@ class LayoutRenderer:
             sh.line.color.rgb = rgb(stroke)
             sh.line.width = Pt(float(obj.get("stroke_width", 1)))
             if "dash" in obj:
-                sh.line.dash_style = getattr(MSO_LINE_DASH_STYLE, obj["dash"])
+                dash_style = _resolve_dash_style(obj["dash"])
+                if dash_style is not None:
+                    sh.line.dash_style = dash_style
 
     def _add_line(self, slide, obj: dict[str, Any]) -> None:
         x1, y1, x2, y2 = obj["points"]
@@ -236,7 +260,9 @@ class LayoutRenderer:
         line.line.color.rgb = rgb(obj.get("color", "#000000"))
         line.line.width = Pt(float(obj.get("width", 1)))
         if "dash" in obj:
-            line.line.dash_style = getattr(MSO_LINE_DASH_STYLE, obj["dash"])
+            dash_style = _resolve_dash_style(obj["dash"])
+            if dash_style is not None:
+                line.line.dash_style = dash_style
 
     def _add_polyline(self, slide, obj: dict[str, Any]) -> None:
         points = obj["points"]
