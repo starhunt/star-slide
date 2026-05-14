@@ -47,6 +47,8 @@ except ImportError as exc:  # pragma: no cover - exercised by runtime environmen
 
 WEB_ROOT = Path("output/web_jobs")
 ALLOWED_SUFFIXES = {".pptx", ".pdf"}
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
+UPLOAD_SUFFIXES = ALLOWED_SUFFIXES | IMAGE_SUFFIXES
 MAX_UPLOAD_BYTES = 300 * 1024 * 1024
 SSE_HEARTBEAT_SECONDS = 15.0
 TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
@@ -204,8 +206,12 @@ def create_app() -> FastAPI:
         safe_name = Path(filename).name
         if not safe_name or safe_name in {".", ".."}:
             raise HTTPException(status_code=400, detail="파일명이 올바르지 않습니다.")
-        if Path(safe_name).suffix.lower() not in ALLOWED_SUFFIXES:
-            raise HTTPException(status_code=400, detail="PPTX/PDF 파일만 업로드할 수 있습니다.")
+        upload_suffix = Path(safe_name).suffix.lower()
+        if upload_suffix not in UPLOAD_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail="PPTX/PDF 또는 이미지(PNG/JPG) 파일만 업로드할 수 있습니다.",
+            )
 
         raw_options = request.headers.get("x-star-slide-options", "{}")
         try:
@@ -239,6 +245,21 @@ def create_app() -> FastAPI:
             with contextlib.suppress(OSError):
                 input_path.unlink()
             raise HTTPException(status_code=400, detail="업로드 파일이 비어 있습니다.")
+
+        # 단일 이미지 업로드는 1-슬라이드 PPTX 로 래핑해서 PPTX 파이프라인에 그대로 흘려보낸다.
+        # 원본 이미지는 그대로 두고, input_path/filename 만 wrapper PPTX 로 교체한다.
+        if upload_suffix in IMAGE_SUFFIXES:
+            try:
+                wrapper_path = wrap_image_as_pptx(input_path)
+            except Exception as exc:
+                with contextlib.suppress(OSError):
+                    input_path.unlink()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미지 파일을 PPTX 로 변환하지 못했습니다: {sanitize_error(str(exc))}",
+                ) from exc
+            input_path = wrapper_path
+            safe_name = wrapper_path.name
 
         state = JobState(
             id=job_id,
@@ -923,6 +944,49 @@ def first_executable(names: tuple[str, ...]) -> str | None:
 
 def python_module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
+
+
+def wrap_image_as_pptx(image_path: Path) -> Path:
+    """단일 이미지(PNG/JPG)를 1-슬라이드 PPTX 로 래핑한다.
+
+    파이프라인은 PPTX/PDF 만 직접 처리하므로, 이미지 입력은 동일 디렉토리에
+    `<stem>.pptx` (이미 존재하면 `<stem>__input.pptx`) 로 감싸서 흘려보낸다.
+    이미지 비율을 유지하기 위해 슬라이드 크기는 이미지 픽셀 크기를 기반으로 잡고,
+    PICTURE shape 는 슬라이드 전체를 채운다.
+    """
+    from PIL import Image
+    from pptx import Presentation
+    from pptx.util import Emu
+
+    target = image_path.with_suffix(".pptx")
+    if target.exists():
+        target = image_path.with_name(f"{image_path.stem}__input.pptx")
+
+    with Image.open(image_path) as im:
+        width_px, height_px = im.size
+    if width_px <= 0 or height_px <= 0:
+        raise ValueError(f"잘못된 이미지 크기입니다: {image_path}")
+
+    # PowerPoint 슬라이드 크기 한도(약 51,206,400 EMU ≈ 56인치)를 넘기지 않도록 96 DPI 가정.
+    emu_per_inch = 914400
+    width_emu = int(width_px / 96 * emu_per_inch)
+    height_emu = int(height_px / 96 * emu_per_inch)
+    max_emu = 50_000_000
+    if width_emu > max_emu or height_emu > max_emu:
+        scale = max_emu / max(width_emu, height_emu)
+        width_emu = int(width_emu * scale)
+        height_emu = int(height_emu * scale)
+
+    prs = Presentation()
+    prs.slide_width = Emu(width_emu)
+    prs.slide_height = Emu(height_emu)
+    blank_layout = prs.slide_layouts[6]
+    slide = prs.slides.add_slide(blank_layout)
+    slide.shapes.add_picture(
+        str(image_path), 0, 0, width=prs.slide_width, height=prs.slide_height,
+    )
+    prs.save(str(target))
+    return target
 
 
 def update_job(job_id: str, *, force: bool = False, **changes: Any) -> None:
@@ -2245,11 +2309,11 @@ INDEX_HTML = r"""<!doctype html>
       <h2 data-i18n="upload.title">파일 업로드</h2>
       <div id="drop" class="drop">
         <div>
-          <strong data-i18n="upload.drop">PPTX/PDF를 드래그하거나 클릭</strong>
-          <span id="fileLabel" class="hint" data-i18n="upload.fileHint">NotebookLM에서 내려받은 .pptx 또는 .pdf 파일</span>
+          <strong data-i18n="upload.drop">PPTX/PDF/이미지를 드래그하거나 클릭</strong>
+          <span id="fileLabel" class="hint" data-i18n="upload.fileHint">.pptx · .pdf · .png · .jpg (이미지는 1-슬라이드 PPTX 로 변환)</span>
         </div>
       </div>
-      <input id="file" type="file" accept=".pptx,.pdf" hidden />
+      <input id="file" type="file" accept=".pptx,.pdf,.png,.jpg,.jpeg,image/png,image/jpeg" hidden />
       <div class="actions upload-actions">
         <button id="start" data-i18n="upload.start">변환 시작</button>
       </div>
@@ -2542,8 +2606,8 @@ INDEX_HTML = r"""<!doctype html>
         "theme.light": "라이트 모드",
         "theme.dark": "다크 모드",
         "upload.title": "파일 업로드",
-        "upload.drop": "PPTX/PDF를 드래그하거나 클릭",
-        "upload.fileHint": "NotebookLM에서 내려받은 .pptx 또는 .pdf 파일",
+        "upload.drop": "PPTX/PDF/이미지를 드래그하거나 클릭",
+        "upload.fileHint": ".pptx · .pdf · .png · .jpg (이미지는 1-슬라이드 PPTX 로 변환)",
         "upload.start": "변환 시작",
         "upload.uploading": "업로드 중",
         "upload.progress": "업로드 {percent}%",
@@ -2674,7 +2738,7 @@ INDEX_HTML = r"""<!doctype html>
         "system.checking": "시스템 의존성을 확인하는 중입니다.",
         "system.failed": "시스템 의존성 확인 실패: {error}",
         "system.empty": "시스템 의존성 정보가 없습니다.",
-        "alerts.selectFile": "먼저 PPTX/PDF 파일을 선택하세요.",
+        "alerts.selectFile": "먼저 PPTX/PDF/이미지 파일을 선택하세요.",
         "alerts.uploadFailed": "업로드 실패: {error}",
         "alerts.networkUploadFailed": "업로드 실패: 네트워크 오류",
         "alerts.cancelConfirm": "이 작업을 취소하시겠습니까? 진행 단계가 끝난 직후 중단됩니다.",
@@ -2703,8 +2767,8 @@ INDEX_HTML = r"""<!doctype html>
         "theme.light": "Light Mode",
         "theme.dark": "Dark Mode",
         "upload.title": "Upload",
-        "upload.drop": "Drag or click to upload PPTX/PDF",
-        "upload.fileHint": ".pptx or .pdf exported from NotebookLM",
+        "upload.drop": "Drag or click to upload PPTX/PDF/Image",
+        "upload.fileHint": ".pptx · .pdf · .png · .jpg (single images become a 1-slide PPTX)",
         "upload.start": "Start Conversion",
         "upload.uploading": "Uploading",
         "upload.progress": "Upload {percent}%",
@@ -2835,7 +2899,7 @@ INDEX_HTML = r"""<!doctype html>
         "system.checking": "Checking system dependencies.",
         "system.failed": "System dependency check failed: {error}",
         "system.empty": "No system dependency information.",
-        "alerts.selectFile": "Select a PPTX/PDF file first.",
+        "alerts.selectFile": "Select a PPTX/PDF/image file first.",
         "alerts.uploadFailed": "Upload failed: {error}",
         "alerts.networkUploadFailed": "Upload failed: network error",
         "alerts.cancelConfirm": "Cancel this job? It will stop after the current step finishes.",
