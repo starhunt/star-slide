@@ -1,0 +1,349 @@
+{
+  "image_size": [2560, 1440],
+  "texts": [
+    {
+      "text": "전남광주 초광역 공유플랫폼 통합인증서비스 구성도",
+      "bbox": [288, 31, 1263, 63],
+      "font_size_px": 58,
+      "color": "#071a44",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "소속대학 ID 하나로 전남광주 34개 대학 공유자원 이용",
+      "bbox": [585, 119, 763, 39],
+      "font_size_px": 35,
+      "color": "#5d5d5d",
+      "is_bold": false,
+      "alignment": "center"
+    },
+    {
+      "text": "사용자",
+      "bbox": [125, 258, 193, 59],
+      "font_size_px": 50,
+      "color": "#008c8c",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "광주지역 대학생",
+      "bbox": [399, 313, 199, 36],
+      "font_size_px": 29,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "전남지역 대학생",
+      "bbox": [706, 314, 199, 36],
+      "font_size_px": 29,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "교직원",
+      "bbox": [1089, 314, 90, 36],
+      "font_size_px": 29,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "연구자",
+      "bbox": [1376, 314, 91, 36],
+      "font_size_px": 29,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "외국인 유학생",
+      "bbox": [1624, 314, 193, 36],
+      "font_size_px": 29,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "IDP",
+      "bbox": [140, 513, 91, 56],
+      "font_size_px": 51,
+      "color": "#0f63b7",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "광주 17개 대학 IDP",
+      "bbox": [518, 461, 313, 44],
+      "font_size_px": 39,
+      "color": "#008c8c",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "...",
+      "bbox": [916, 533, 44, 30],
+      "font_size_px": 30,
+      "color": "#008c8c",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "기존 연합인증",
+      "bbox": [568, 606, 174, 40],
+      "font_size_px": 35,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "+",
+      "bbox": [1020, 509, 55, 74],
+      "font_size_px": 66,
+      "color": "#0f63b7",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "전남 17개 대학 IDP",
+      "bbox": [1283, 461, 343, 44],
+      "font_size_px": 39,
+      "color": "#008c8c",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "...",
+      "bbox": [1688, 533, 45, 30],
+      "font_size_px": 30,
+      "color": "#008c8c",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "신규 확장",
+      "bbox": [1306, 608, 168, 40],
+      "font_size_px": 35,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "통합인증",
+      "bbox": [111, 762, 126, 43],
+      "font_size_px": 41,
+      "color": "#0f63b7",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "코어",
+      "bbox": [140, 813, 70, 44],
+      "font_size_px": 41,
+      "color": "#0f63b7",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "Discovery 서비스",
+      "bbox": [476, 790, 295, 44],
+      "font_size_px": 40,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "대학 선택 및 인증기관 탐지",
+      "bbox": [485, 858, 263, 31],
+      "font_size_px": 27,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "SSO 인증엔진",
+      "bbox": [961, 791, 233, 44],
+      "font_size_px": 40,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "멀티도메인 단일 로그인",
+      "bbox": [963, 859, 249, 31],
+      "font_size_px": 27,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "ID-Federation",
+      "bbox": [1393, 790, 225, 45],
+      "font_size_px": 40,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "연합인증 토큰 발급",
+      "bbox": [1398, 859, 229, 31],
+      "font_size_px": 27,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "SP",
+      "bbox": [141, 1084, 88, 71],
+      "font_size_px": 61,
+      "color": "#df7b00",
+      "is_bold": true,
+      "alignment": "left"
+    },
+    {
+      "text": "광주 RISE정보자원",
+      "bbox": [324, 1146, 203, 36],
+      "font_size_px": 28,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "공유플랫폼",
+      "bbox": [374, 1183, 112, 34],
+      "font_size_px": 28,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "빛나래공유대학",
+      "bbox": [626, 1150, 161, 35],
+      "font_size_px": 28,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "Study in",
+      "bbox": [888, 1146, 112, 34],
+      "font_size_px": 28,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "Gwangju",
+      "bbox": [880, 1180, 128, 34],
+      "font_size_px": 28,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "공유연구장비",
+      "bbox": [1189, 1150, 161, 35],
+      "font_size_px": 28,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "공유교육프로그램",
+      "bbox": [1416, 1150, 200, 35],
+      "font_size_px": 28,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "취·창업정보",
+      "bbox": [1700, 1150, 149, 35],
+      "font_size_px": 28,
+      "color": "#202020",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "통합인증 핵심코어",
+      "bbox": [2128, 211, 238, 38],
+      "font_size_px": 34,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "오픈소스 활용",
+      "bbox": [2163, 266, 166, 36],
+      "font_size_px": 34,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "기술",
+      "bbox": [2160, 443, 176, 83],
+      "font_size_px": 69,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "사업화",
+      "bbox": [2126, 546, 238, 83],
+      "font_size_px": 69,
+      "color": "#ffffff",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "“",
+      "bbox": [2051, 806, 54, 56],
+      "font_size_px": 55,
+      "color": "#00958e",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "전남/광주 기업과",
+      "bbox": [2080, 904, 330, 56],
+      "font_size_px": 47,
+      "color": "#071a44",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "대학에 공유하여",
+      "bbox": [2121, 988, 248, 56],
+      "font_size_px": 47,
+      "color": "#071a44",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "기술사업화에 활용",
+      "bbox": [2110, 1071, 275, 56],
+      "font_size_px": 47,
+      "color": "#071a44",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "”",
+      "bbox": [2386, 1148, 56, 56],
+      "font_size_px": 55,
+      "color": "#00958e",
+      "is_bold": true,
+      "alignment": "center"
+    },
+    {
+      "text": "핵심 : 소속대학 ID 하나로 모든 서비스 이용 가능 — 전남광주 지역대학 연합인증(ID-Federation) 기반",
+      "bbox": [166, 1325, 1589, 48],
+      "font_size_px": 39,
+      "color": "#071a44",
+      "is_bold": true,
+      "alignment": "center"
+    }
+  ]
+}
