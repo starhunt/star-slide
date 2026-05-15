@@ -1,0 +1,406 @@
+{
+  "image_size": [
+    2560,
+    1440
+  ],
+  "layer_count": 33,
+  "elapsed_sec": 16.2,
+  "layers": [
+    {
+      "bbox": [
+        0,
+        5,
+        2560,
+        1428
+      ],
+      "z": 0,
+      "area_ratio": 0.3410847981770833,
+      "score": 0.9789146184921265,
+      "alpha_path": "objects/layer_000.png"
+    },
+    {
+      "bbox": [
+        64,
+        220,
+        2381,
+        459
+      ],
+      "z": 1,
+      "area_ratio": 0.12711859809027778,
+      "score": 0.964178204536438,
+      "alpha_path": "objects/layer_001.png"
+    },
+    {
+      "bbox": [
+        64,
+        599,
+        1685,
+        625
+      ],
+      "z": 2,
+      "area_ratio": 0.10302056206597222,
+      "score": 0.9642782211303711,
+      "alpha_path": "objects/layer_002.png"
+    },
+    {
+      "bbox": [
+        44,
+        59,
+        1844,
+        305
+      ],
+      "z": 3,
+      "area_ratio": 0.08852945963541667,
+      "score": 0.9834317564964294,
+      "alpha_path": "objects/layer_003.png"
+    },
+    {
+      "bbox": [
+        1999,
+        748,
+        492,
+        503
+      ],
+      "z": 4,
+      "area_ratio": 0.06601019965277778,
+      "score": 0.9921660423278809,
+      "alpha_path": "objects/layer_004.png"
+    },
+    {
+      "bbox": [
+        1977,
+        140,
+        534,
+        559
+      ],
+      "z": 5,
+      "area_ratio": 0.06350748697916667,
+      "score": 0.9891279339790344,
+      "alpha_path": "objects/layer_005.png"
+    },
+    {
+      "bbox": [
+        73,
+        423,
+        908,
+        249
+      ],
+      "z": 6,
+      "area_ratio": 0.03869086371527778,
+      "score": 0.9802466630935669,
+      "alpha_path": "objects/layer_006.png"
+    },
+    {
+      "bbox": [
+        352,
+        748,
+        441,
+        175
+      ],
+      "z": 7,
+      "area_ratio": 0.02065185546875,
+      "score": 0.9789363145828247,
+      "alpha_path": "objects/layer_007.png"
+    },
+    {
+      "bbox": [
+        355,
+        747,
+        1320,
+        178
+      ],
+      "z": 8,
+      "area_ratio": 0.020203721788194445,
+      "score": 0.8396482467651367,
+      "alpha_path": "objects/layer_008.png"
+    },
+    {
+      "bbox": [
+        816,
+        748,
+        415,
+        175
+      ],
+      "z": 9,
+      "area_ratio": 0.019322374131944445,
+      "score": 0.9870180487632751,
+      "alpha_path": "objects/layer_009.png"
+    },
+    {
+      "bbox": [
+        525,
+        525,
+        263,
+        122
+      ],
+      "z": 10,
+      "area_ratio": 0.0034461805555555556,
+      "score": 0.8917460441589355,
+      "alpha_path": "objects/layer_010.png"
+    },
+    {
+      "bbox": [
+        1283,
+        596,
+        258,
+        49
+      ],
+      "z": 11,
+      "area_ratio": 0.00329345703125,
+      "score": 0.9831691980361938,
+      "alpha_path": "objects/layer_011.png"
+    },
+    {
+      "bbox": [
+        1749,
+        795,
+        194,
+        92
+      ],
+      "z": 12,
+      "area_ratio": 0.0024462890625,
+      "score": 0.9608587026596069,
+      "alpha_path": "objects/layer_012.png"
+    },
+    {
+      "bbox": [
+        1668,
+        207,
+        93,
+        96
+      ],
+      "z": 13,
+      "area_ratio": 0.0016387261284722223,
+      "score": 0.923709511756897,
+      "alpha_path": "objects/layer_013.png"
+    },
+    {
+      "bbox": [
+        771,
+        201,
+        80,
+        100
+      ],
+      "z": 14,
+      "area_ratio": 0.0015638563368055556,
+      "score": 0.9544416666030884,
+      "alpha_path": "objects/layer_014.png"
+    },
+    {
+      "bbox": [
+        848,
+        779,
+        85,
+        105
+      ],
+      "z": 15,
+      "area_ratio": 0.0015625,
+      "score": 0.9396058320999146,
+      "alpha_path": "objects/layer_015.png"
+    },
+    {
+      "bbox": [
+        1380,
+        201,
+        75,
+        102
+      ],
+      "z": 16,
+      "area_ratio": 0.0014455837673611111,
+      "score": 0.9682913422584534,
+      "alpha_path": "objects/layer_016.png"
+    },
+    {
+      "bbox": [
+        1085,
+        201,
+        76,
+        99
+      ],
+      "z": 17,
+      "area_ratio": 0.0014371744791666667,
+      "score": 0.9567390084266663,
+      "alpha_path": "objects/layer_017.png"
+    },
+    {
+      "bbox": [
+        459,
+        201,
+        77,
+        99
+      ],
+      "z": 18,
+      "area_ratio": 0.0014325629340277777,
+      "score": 0.9627482891082764,
+      "alpha_path": "objects/layer_018.png"
+    },
+    {
+      "bbox": [
+        380,
+        780,
+        87,
+        99
+      ],
+      "z": 19,
+      "area_ratio": 0.0009054904513888888,
+      "score": 0.9283415079116821,
+      "alpha_path": "objects/layer_019.png"
+    },
+    {
+      "bbox": [
+        1336,
+        519,
+        59,
+        61
+      ],
+      "z": 20,
+      "area_ratio": 0.0007698567708333333,
+      "score": 0.9426120519638062,
+      "alpha_path": "objects/layer_020.png"
+    },
+    {
+      "bbox": [
+        1248,
+        520,
+        60,
+        60
+      ],
+      "z": 21,
+      "area_ratio": 0.0007392035590277778,
+      "score": 0.8094982504844666,
+      "alpha_path": "objects/layer_021.png"
+    },
+    {
+      "bbox": [
+        1155,
+        519,
+        58,
+        61
+      ],
+      "z": 22,
+      "area_ratio": 0.0007183159722222222,
+      "score": 0.9470138549804688,
+      "alpha_path": "objects/layer_022.png"
+    },
+    {
+      "bbox": [
+        1593,
+        519,
+        58,
+        61
+      ],
+      "z": 23,
+      "area_ratio": 0.0007047526041666667,
+      "score": 0.9601017832756042,
+      "alpha_path": "objects/layer_023.png"
+    },
+    {
+      "bbox": [
+        400,
+        520,
+        56,
+        60
+      ],
+      "z": 24,
+      "area_ratio": 0.0006966145833333334,
+      "score": 0.9577261209487915,
+      "alpha_path": "objects/layer_024.png"
+    },
+    {
+      "bbox": [
+        573,
+        520,
+        55,
+        60
+      ],
+      "z": 25,
+      "area_ratio": 0.0006876627604166667,
+      "score": 0.9590639472007751,
+      "alpha_path": "objects/layer_025.png"
+    },
+    {
+      "bbox": [
+        660,
+        520,
+        53,
+        60
+      ],
+      "z": 26,
+      "area_ratio": 0.0006865776909722222,
+      "score": 0.9555781483650208,
+      "alpha_path": "objects/layer_026.png"
+    },
+    {
+      "bbox": [
+        825,
+        520,
+        56,
+        60
+      ],
+      "z": 27,
+      "area_ratio": 0.0006852213541666667,
+      "score": 0.9548056125640869,
+      "alpha_path": "objects/layer_027.png"
+    },
+    {
+      "bbox": [
+        1425,
+        520,
+        55,
+        60
+      ],
+      "z": 28,
+      "area_ratio": 0.0006838650173611111,
+      "score": 0.9631496667861938,
+      "alpha_path": "objects/layer_028.png"
+    },
+    {
+      "bbox": [
+        744,
+        520,
+        53,
+        60
+      ],
+      "z": 29,
+      "area_ratio": 0.0006800672743055555,
+      "score": 0.9471865296363831,
+      "alpha_path": "objects/layer_029.png"
+    },
+    {
+      "bbox": [
+        1512,
+        520,
+        55,
+        60
+      ],
+      "z": 30,
+      "area_ratio": 0.0006773546006944444,
+      "score": 0.958525538444519,
+      "alpha_path": "objects/layer_030.png"
+    },
+    {
+      "bbox": [
+        487,
+        520,
+        54,
+        59
+      ],
+      "z": 31,
+      "area_ratio": 0.00067138671875,
+      "score": 0.941942572593689,
+      "alpha_path": "objects/layer_031.png"
+    },
+    {
+      "bbox": [
+        1708,
+        249,
+        53,
+        54
+      ],
+      "z": 32,
+      "area_ratio": 0.0006095377604166666,
+      "score": 0.930220365524292,
+      "alpha_path": "objects/layer_032.png"
+    }
+  ]
+}
