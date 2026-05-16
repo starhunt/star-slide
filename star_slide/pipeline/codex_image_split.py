@@ -136,6 +136,43 @@ CODEX_TEXT_PROMPT = """이미지의 모든 텍스트를 JSON 으로 추출해주
 """
 
 
+def normalize_text_layout_to_image_size(
+    text_layout: dict,
+    actual_image_size: tuple[int, int],
+) -> dict:
+    """codex 가 다른 해상도 (예: 2048x1152) 로 좌표를 줄 수 있어, 실제 이미지 크기로
+    bbox/font_size_px 를 비례 변환.
+
+    text_layout['image_size'] 가 실제와 다르면 모든 텍스트의 좌표를 스케일.
+    in-place 수정 후 반환.
+    """
+    if "image_size" not in text_layout or "texts" not in text_layout:
+        return text_layout
+    js_w, js_h = text_layout["image_size"]
+    real_w, real_h = actual_image_size
+    if js_w <= 0 or js_h <= 0:
+        return text_layout
+    if abs(js_w - real_w) <= 4 and abs(js_h - real_h) <= 4:
+        return text_layout  # 같음
+    sx = real_w / js_w
+    sy = real_h / js_h
+    s_avg = (sx + sy) / 2  # 폰트 크기 (가로/세로 평균)
+    for t in text_layout["texts"]:
+        bbox = t.get("bbox", (0, 0, 0, 0))
+        if len(bbox) == 4:
+            t["bbox"] = [
+                int(bbox[0] * sx),
+                int(bbox[1] * sy),
+                int(bbox[2] * sx),
+                int(bbox[3] * sy),
+            ]
+        if "font_size_px" in t:
+            t["font_size_px"] = float(t["font_size_px"]) * s_avg
+    text_layout["image_size"] = [real_w, real_h]
+    text_layout["_normalized_from"] = [js_w, js_h]
+    return text_layout
+
+
 def analyze_text_with_codex(
     image_path: Path,
     *,
@@ -144,8 +181,8 @@ def analyze_text_with_codex(
 ) -> dict:
     """Codex CLI Vision LLM 으로 이미지의 텍스트 + 위치 추출.
 
-    내부적으로 `codex exec --dangerously-bypass-approvals-and-sandbox -i <img>` 실행.
-    실패 시 RuntimeError.
+    PoC 와 동일하게 prompt 를 stdin 으로 전달 (인자로 멀티라인 prompt 를 보내면
+    codex 가 `No prompt provided via stdin.` 으로 종료함).
     """
     out_json.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -154,10 +191,10 @@ def analyze_text_with_codex(
         "--skip-git-repo-check", "--ephemeral",
         "-i", str(image_path),
         "-o", str(out_json),
-        CODEX_TEXT_PROMPT,
     ]
     completed = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout_sec, check=False,
+        cmd, input=CODEX_TEXT_PROMPT,
+        capture_output=True, text=True, timeout=timeout_sec, check=False,
     )
     if completed.returncode != 0:
         raise RuntimeError(
@@ -195,39 +232,57 @@ def remove_text_codex_imagegen(
 ) -> Path:
     """Codex image_gen 2.0 으로 텍스트만 제거된 이미지 생성.
 
-    Codex 가 이미지를 만들고 자동으로 프로젝트 디렉토리에 복사하므로,
-    stdout 마지막 줄의 PNG 경로를 파싱해 out_png 로 옮긴다.
-    target_size 가 주어지면 LANCZOS 로 리사이즈.
+    PoC 와 동일하게 prompt 를 stdin 으로 전달 (인자 전달은 codex 가 거부).
+    Codex 가 image_gen 도구로 새 PNG 를 생성하면 보통 ~/.codex/generated_images/.../ig_*.png
+    경로에 저장하고 stdout 마지막 줄에 그 경로(들)를 출력한다.
+
+    stdout 파싱 규칙:
+      - 입력 이미지 경로(image_path) 와 동일한 line 은 무시
+      - 'ig_' 접두사를 포함하거나 'generated_images' 디렉토리 안의 PNG 를 우선 채택
+      - codex 가 image_gen 을 호출하지 않고 입력 그대로 반환한 경우 RuntimeError
     """
     out_png.parent.mkdir(parents=True, exist_ok=True)
+    input_abs = str(image_path.resolve())
     cmd = [
         "codex", "exec",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check", "--ephemeral",
         "-i", str(image_path),
-        CODEX_REMOVE_TEXT_PROMPT,
     ]
     completed = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout_sec, check=False,
+        cmd, input=CODEX_REMOVE_TEXT_PROMPT,
+        capture_output=True, text=True, timeout=timeout_sec, check=False,
     )
     if completed.returncode != 0:
         raise RuntimeError(
             f"Codex image_gen 실패 (exit={completed.returncode}): "
             f"{completed.stderr[:500]}"
         )
-    # stdout 마지막 줄에 절대 경로 PNG 출력 기대 (codex 가 보통 그렇게 줌)
+    # 후보 PNG 경로 수집
     stdout_lines = [ln.strip() for ln in completed.stdout.splitlines() if ln.strip()]
-    candidate_path: Path | None = None
-    for line in reversed(stdout_lines):
-        if line.endswith(".png") and Path(line).exists():
-            candidate_path = Path(line)
-            break
-    if candidate_path is None:
+    candidates: list[Path] = []
+    for line in stdout_lines:
+        if not line.endswith(".png"):
+            continue
+        # codex stdout 에는 절대 경로 외에 다른 텍스트도 섞여 있을 수 있으므로
+        # 경로처럼 보이는 부분만 추출 (마지막 공백 이후)
+        path_str = line.rsplit(" ", 1)[-1]
+        if not Path(path_str).exists():
+            continue
+        if Path(path_str).resolve() == Path(input_abs).resolve():
+            continue
+        candidates.append(Path(path_str))
+
+    if not candidates:
         raise RuntimeError(
-            f"Codex image_gen 출력 PNG 경로를 찾을 수 없음. stdout 마지막 500자:\n"
-            f"{completed.stdout[-500:]}"
+            "Codex image_gen 출력 PNG 경로를 찾을 수 없음 (image_gen 도구 미호출 의심). "
+            f"stdout 마지막 500자:\n{completed.stdout[-500:]}"
         )
-    shutil.copy2(candidate_path, out_png)
+    # generated_images 디렉토리 안의 ig_* PNG 를 우선 채택 (가장 최근 mtime)
+    generated = [p for p in candidates if "generated_images" in str(p)]
+    pool = generated or candidates
+    chosen = max(pool, key=lambda p: p.stat().st_mtime)
+    shutil.copy2(chosen, out_png)
     if target_size is not None:
         with Image.open(out_png) as im:
             if im.size != target_size:
@@ -579,11 +634,25 @@ def convert_image_split(
     emit("Codex Vision 으로 텍스트 + 위치 추출 중", 5)
     text_json_path = workdir / "text_layout.json"
     text_layout = analyze_text_with_codex(input_image, out_json=text_json_path)
-    emit(f"텍스트 {len(text_layout.get('texts', []))}개 추출", 25)
 
     check_cancel()
     image = Image.open(input_image).convert("RGB")
     target_size = image.size
+
+    # codex 가 다른 해상도로 좌표를 줄 수 있어 실제 이미지 크기로 정규화 후 저장
+    js_size = text_layout.get("image_size", target_size)
+    text_layout = normalize_text_layout_to_image_size(text_layout, target_size)
+    if "_normalized_from" in text_layout:
+        text_json_path.write_text(
+            json.dumps(text_layout, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        emit(
+            f"텍스트 {len(text_layout.get('texts', []))}개 추출 "
+            f"(좌표 {js_size}→{target_size} 정규화)", 25,
+        )
+    else:
+        emit(f"텍스트 {len(text_layout.get('texts', []))}개 추출", 25)
 
     clean_path = workdir / "02_clean_bg.png"
     if options.text_erase_mode == "codex_imagegen":
