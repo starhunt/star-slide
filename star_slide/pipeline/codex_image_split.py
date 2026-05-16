@@ -21,6 +21,7 @@ notebooklm_auto.py 의 reconstruction_mode='image_split' 에서 호출된다.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -36,7 +37,9 @@ from lxml import etree
 from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.oxml.ns import nsmap as _pptx_nsmap  # noqa: F401  (lxml namespace 보장)
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Pt
 
@@ -47,6 +50,37 @@ PT_PER_INCH = 72.0
 SLIDE_W_EMU = 12192000   # 13.333" — 표준 16:9
 SLIDE_H_EMU = 6858000    #  7.5"
 DEFAULT_FONT = "Apple SD Gothic Neo"
+
+# Codex Vision shape 분석 prompt
+CODEX_SHAPES_PROMPT = """첨부된 인포그래픽에서 모든 도형/객체 정보를 JSON 으로 추출해주세요. 다른 설명 없이 순수 JSON만.
+
+목적: PowerPoint 로 재구성하기 위한 layered 분리.
+- 단순 도형 (직사각형/둥근 직사각형/원형/타원/화살표/선) → PPT native shape 으로 재현
+- 복잡한 픽토그램 (사람, 건물, 책, 지구본, 모자, 가방, 모니터 등) → alpha PNG 로 처리
+
+형식:
+{
+  "image_size": [w, h],
+  "shapes": [
+    {
+      "type": "rectangle|rounded_rect|oval|arrow|line|pictogram",
+      "bbox": [x, y, w, h],
+      "fill": "#hex" | "gradient:#hex1->#hex2" | "transparent",
+      "stroke": "#hex" | "none",
+      "stroke_width": 2,
+      "stroke_dash": "solid|dashed|dotted",
+      "name": "선택적 라벨",
+      "z_hint": "background|container|card|pictogram|decoration"
+    }
+  ]
+}
+
+요구사항:
+- 큰 컨테이너 박스, 그 안의 작은 카드, 점선 박스, 화살표, 픽토그램 모두 빠짐없이
+- 픽토그램은 type='pictogram' (alpha PNG 처리 대상). bbox 만 정확히.
+- 텍스트는 무시 (별도 추출됨)
+- z_hint 로 z-order 힌트 (큰=container, 카드=card, 픽토그램=pictogram, 작은 장식=decoration)
+"""
 
 
 @dataclass(frozen=True)
@@ -65,6 +99,11 @@ class ImageSplitOptions:
       'clean'       — Codex 가 만든 텍스트 제거 이미지를 통째로 깔기 (시각 충실하지만
                       객체와 이중 합성. 사용자가 객체를 옮기면 배경에 같은 모양 잔존)
     """
+
+    use_native_shapes: bool = True
+    """Codex Vision 으로 도형 (rect/rounded_rect/oval/arrow) 추출해 PPT native shape
+    으로 추가 (사용자가 PPT 에서 색/크기 직접 편집 가능). 픽토그램은 codex bbox 로
+    alpha PNG crop. False 면 SAM2 만 사용 (이전 동작)."""
 
     sam_resize: int = 1920
     """SAM2 입력 리사이즈 폭. 0=원본 사용 (정밀하지만 느림)"""
@@ -215,6 +254,73 @@ def analyze_text_with_codex(
             f"stdout 마지막 500자:\n{completed.stdout[-500:]}"
         )
     return json.loads(out_json.read_text(encoding="utf-8"))
+
+
+def analyze_shapes_with_codex(
+    image_path: Path,
+    *,
+    out_json: Path,
+    timeout_sec: float = 600.0,
+) -> dict:
+    """Codex Vision 으로 도형/픽토그램 layout 추출 (텍스트 제외).
+
+    출력 JSON:
+      {"image_size": [w, h], "shapes": [{type, bbox, fill, stroke, ..., z_hint}, ...]}
+    """
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "codex", "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check", "--ephemeral",
+        "-i", str(image_path),
+        "-o", str(out_json),
+    ]
+    completed = subprocess.run(
+        cmd, input=CODEX_SHAPES_PROMPT,
+        capture_output=True, text=True, timeout=timeout_sec, check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"Codex 도형 분석 실패 (exit={completed.returncode}): "
+            f"{completed.stderr[:500]}"
+        )
+    if not out_json.exists() or out_json.stat().st_size == 0:
+        raise RuntimeError(
+            f"Codex 도형 결과 파일이 비어있음: {out_json}\n"
+            f"stdout 마지막 500자:\n{completed.stdout[-500:]}"
+        )
+    return json.loads(out_json.read_text(encoding="utf-8"))
+
+
+def normalize_shapes_to_image_size(
+    shapes_layout: dict,
+    actual_image_size: tuple[int, int],
+) -> dict:
+    """text_layout 과 동일 — codex 가 다른 해상도로 좌표를 줘도 실제 크기로 변환."""
+    if "image_size" not in shapes_layout or "shapes" not in shapes_layout:
+        return shapes_layout
+    js_w, js_h = shapes_layout["image_size"]
+    real_w, real_h = actual_image_size
+    if js_w <= 0 or js_h <= 0:
+        return shapes_layout
+    if abs(js_w - real_w) <= 4 and abs(js_h - real_h) <= 4:
+        return shapes_layout
+    sx = real_w / js_w
+    sy = real_h / js_h
+    for s in shapes_layout["shapes"]:
+        bbox = s.get("bbox", (0, 0, 0, 0))
+        if len(bbox) == 4:
+            s["bbox"] = [
+                int(bbox[0] * sx),
+                int(bbox[1] * sy),
+                int(bbox[2] * sx),
+                int(bbox[3] * sy),
+            ]
+        if "stroke_width" in s:
+            s["stroke_width"] = max(1, int(float(s["stroke_width"]) * (sx + sy) / 2))
+    shapes_layout["image_size"] = [real_w, real_h]
+    shapes_layout["_normalized_from"] = [js_w, js_h]
+    return shapes_layout
 
 
 # ============================================================
@@ -566,6 +672,125 @@ def _add_textbox(
     _set_east_asian_font(run._r.get_or_add_rPr(), font_name)
 
 
+def _hex_to_rgb(s: str) -> tuple[int, int, int]:
+    s = (s or "").strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    if len(s) != 6:
+        return (200, 200, 200)
+    try:
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    except ValueError:
+        return (200, 200, 200)
+
+
+def _parse_dash(dash: str):
+    from pptx.enum.dml import MSO_LINE_DASH_STYLE
+    return {
+        "solid": MSO_LINE_DASH_STYLE.SOLID,
+        "dashed": MSO_LINE_DASH_STYLE.DASH,
+        "dotted": MSO_LINE_DASH_STYLE.ROUND_DOT,
+    }.get((dash or "solid").lower(), MSO_LINE_DASH_STYLE.SOLID)
+
+
+def _shape_z(z_hint: str) -> int:
+    """z_hint → z-order 정수 (작을수록 뒤). 같은 그룹 안에서는 면적 큰 순."""
+    return {
+        "background": 0,
+        "container": 10,
+        "decoration": 20,
+        "card": 30,
+        "pictogram": 40,
+    }.get((z_hint or "decoration").lower(), 25)
+
+
+def _apply_fill(shape, fill_spec: str) -> None:
+    """fill_spec: '#hex' | 'gradient:#hex1->#hex2' | 'transparent' | 'none'."""
+    spec = (fill_spec or "").strip()
+    if spec in ("transparent", "none", ""):
+        with contextlib.suppress(Exception):
+            shape.fill.background()
+        return
+    if spec.startswith("gradient:") and "->" in spec:
+        # python-pptx 는 gradient 직접 지원 미흡 — XML 직접 작성
+        body = spec[len("gradient:"):]
+        c1, c2 = body.split("->", 1)
+        r1, g1, b1 = _hex_to_rgb(c1)
+        r2, g2, b2 = _hex_to_rgb(c2)
+        sp = shape.fill._xPr  # type: ignore[attr-defined]
+        # 기존 fill 제거
+        for tag in ("a:noFill", "a:solidFill", "a:gradFill", "a:blipFill", "a:pattFill"):
+            for el in sp.findall(qn(tag)):
+                sp.remove(el)
+        grad_xml = (
+            f'<a:gradFill xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" rotWithShape="1">'
+            f'<a:gsLst>'
+            f'<a:gs pos="0"><a:srgbClr val="{r1:02X}{g1:02X}{b1:02X}"/></a:gs>'
+            f'<a:gs pos="100000"><a:srgbClr val="{r2:02X}{g2:02X}{b2:02X}"/></a:gs>'
+            f'</a:gsLst>'
+            f'<a:lin ang="5400000" scaled="0"/>'
+            f'</a:gradFill>'
+        )
+        sp.append(etree.fromstring(grad_xml))
+        return
+    # solid hex
+    r, g, b = _hex_to_rgb(spec)
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = RGBColor(r, g, b)
+
+
+def _apply_stroke(shape, stroke_spec: str, stroke_width: float, dash: str) -> None:
+    line = shape.line
+    if (stroke_spec or "none").lower() in ("none", ""):
+        line.fill.background()
+        return
+    r, g, b = _hex_to_rgb(stroke_spec)
+    line.color.rgb = RGBColor(r, g, b)
+    if stroke_width and stroke_width > 0:
+        line.width = Emu(int(stroke_width * EMU_PER_INCH / 96))
+    with contextlib.suppress(Exception):
+        line.dash_style = _parse_dash(dash)
+
+
+def _add_native_shape(slide, shape_data: dict, *, scale: float) -> None:
+    """codex shape 한 개 → PPT native shape (rect/rounded/oval/arrow/line)."""
+    bbox = shape_data.get("bbox", [0, 0, 0, 0])
+    if len(bbox) != 4 or bbox[2] <= 0 or bbox[3] <= 0:
+        return
+    x, y, w, h = bbox
+    left = Emu(int(x * scale))
+    top = Emu(int(y * scale))
+    width = Emu(int(w * scale))
+    height = Emu(int(h * scale))
+
+    type_str = (shape_data.get("type") or "").lower()
+    auto_shape_map = {
+        "rectangle": MSO_SHAPE.RECTANGLE,
+        "rounded_rect": MSO_SHAPE.ROUNDED_RECTANGLE,
+        "rounded_rectangle": MSO_SHAPE.ROUNDED_RECTANGLE,
+        "oval": MSO_SHAPE.OVAL,
+        "ellipse": MSO_SHAPE.OVAL,
+        "circle": MSO_SHAPE.OVAL,
+        "arrow": MSO_SHAPE.RIGHT_ARROW,
+        "line": MSO_SHAPE.RECTANGLE,  # line 은 가는 직사각형으로 근사
+    }
+    auto_shape = auto_shape_map.get(type_str)
+    if auto_shape is None:
+        return  # pictogram 등은 별도 처리 (alpha PNG)
+
+    shape = slide.shapes.add_shape(auto_shape, left, top, width, height)
+    _apply_fill(shape, shape_data.get("fill", "transparent"))
+    _apply_stroke(
+        shape,
+        shape_data.get("stroke", "none"),
+        float(shape_data.get("stroke_width", 0) or 0),
+        shape_data.get("stroke_dash", "solid"),
+    )
+    # textbox 가 아닌 도형이므로 텍스트 프레임 비활성
+    with contextlib.suppress(Exception):
+        shape.text_frame.text = ""
+
+
 def _add_image_split_slide(
     prs: Presentation,
     *,
@@ -575,8 +800,17 @@ def _add_image_split_slide(
     text_layout: dict,
     object_layers: list[_ObjectLayer],
     font_name: str,
+    shapes_layout: dict | None = None,
 ) -> None:
-    """기존 Presentation 에 1 슬라이드 추가. multi-slide 합성용."""
+    """기존 Presentation 에 1 슬라이드 추가. multi-slide 합성용.
+
+    z-order (뒤→앞):
+      1. background (clean/white/transparent)
+      2. shapes_layout 의 native shape (z_hint container → decoration → card 순)
+      3. object_layers 의 alpha PNG (큰 마스크 → 작은 마스크)
+      4. shapes_layout 의 pictogram bbox alpha (있으면 SAM 대신 또는 추가)
+      5. text_layout 의 textbox
+    """
     px_w, _ = image_size
     scale = prs.slide_width / px_w
     effective_dpi = px_w / (prs.slide_width / EMU_PER_INCH)
@@ -584,23 +818,33 @@ def _add_image_split_slide(
     slide = prs.slides.add_slide(blank)
 
     if background_mode == "clean" and background_path is not None:
-        # 시각 충실: clean 이미지 통째 깔기 (객체와 이중 합성)
         slide.shapes.add_picture(
             str(background_path), 0, 0,
             width=prs.slide_width, height=prs.slide_height,
         )
     elif background_mode == "white":
-        # 흰 캔버스 (default — 깔끔, 객체 분리 명확)
-        from pptx.enum.shapes import MSO_SHAPE
         bg = slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE, 0, 0, prs.slide_width, prs.slide_height,
         )
         bg.fill.solid()
         bg.fill.fore_color.rgb = RGBColor(255, 255, 255)
         bg.line.fill.background()
-    # 'transparent' 면 아무것도 안 깔음 (PowerPoint 기본 슬라이드 배경 유지)
+    # 'transparent' 면 아무것도 안 깔음
 
-    # 면적 큰 순 (z 작은) 부터 → 뒤에 깔림. 작은 픽토그램이 위에.
+    # native shape 들 (z_hint 작은 순 = 뒤). 같은 z 안에서는 면적 큰 순.
+    if shapes_layout:
+        natives = [
+            s for s in shapes_layout.get("shapes", [])
+            if (s.get("type") or "").lower() not in ("pictogram",)
+        ]
+        natives.sort(key=lambda s: (
+            _shape_z(s.get("z_hint", "decoration")),
+            -(s.get("bbox", [0, 0, 0, 0])[2] * s.get("bbox", [0, 0, 0, 0])[3]),
+        ))
+        for sd in natives:
+            _add_native_shape(slide, sd, scale=scale)
+
+    # alpha 객체 (SAM2 또는 codex pictogram bbox crop)
     for ly in sorted(object_layers, key=lambda layer: layer.z):
         x, y, w, h = ly.bbox
         slide.shapes.add_picture(
@@ -608,7 +852,8 @@ def _add_image_split_slide(
             Emu(int(x * scale)), Emu(int(y * scale)),
             width=Emu(int(w * scale)), height=Emu(int(h * scale)),
         )
-    # textbox 는 최상단
+
+    # textbox 최상단
     for t in text_layout.get("texts", []):
         _add_textbox(slide, t, scale=scale, effective_dpi=effective_dpi, font_name=font_name)
 
@@ -622,8 +867,9 @@ def compose_image_split_pptx(
     out_path: Path,
     font_name: str = DEFAULT_FONT,
     background_mode: str = "white",
+    shapes_layout: dict | None = None,
 ) -> Path:
-    """단일 슬라이드 PPTX 생성 (compose_image_split_pptx_multi 의 single 버전)."""
+    """단일 슬라이드 PPTX 생성."""
     prs = Presentation()
     prs.slide_width = Emu(SLIDE_W_EMU)
     prs.slide_height = Emu(SLIDE_H_EMU)
@@ -635,10 +881,66 @@ def compose_image_split_pptx(
         text_layout=text_layout,
         object_layers=object_layers,
         font_name=font_name,
+        shapes_layout=shapes_layout,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))
     return out_path
+
+
+def crop_pictograms_from_codex_shapes(
+    clean_image_path: Path,
+    shapes_layout: dict,
+    *,
+    out_dir: Path,
+) -> list[_ObjectLayer]:
+    """codex shapes 의 'pictogram' bbox 를 clean 배경에서 직접 alpha crop.
+
+    SAM2 호출을 대체할 수 있는 빠르고 정확한 경로. codex 가 픽토그램 위치를 정확히
+    알려주므로 마스크 분석 불필요.
+
+    각 bbox 영역에서 흰색이 아닌 픽셀 (또는 배경색이 아닌 픽셀) 을 alpha 로.
+    """
+    image = Image.open(clean_image_path).convert("RGB")
+    arr = np.asarray(image)
+    h, w = arr.shape[:2]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    layers: list[_ObjectLayer] = []
+    pictos = [s for s in shapes_layout.get("shapes", []) if (s.get("type") or "").lower() == "pictogram"]
+    # 면적 큰 순 (큰 픽토그램이 뒤에) — 사실 픽토그램은 보통 비슷 사이즈, 무관
+    pictos.sort(key=lambda s: -(s.get("bbox", [0, 0, 0, 0])[2] * s.get("bbox", [0, 0, 0, 0])[3]))
+    for i, p in enumerate(pictos):
+        bbox = p.get("bbox", [0, 0, 0, 0])
+        if len(bbox) != 4:
+            continue
+        x, y, bw, bh = bbox
+        x = max(0, int(x))
+        y = max(0, int(y))
+        bw = min(w - x, int(bw))
+        bh = min(h - y, int(bh))
+        if bw <= 0 or bh <= 0:
+            continue
+        crop_rgb = arr[y:y + bh, x:x + bw]
+        # alpha = 흰색이 아닌 픽셀 (luminance < 240)
+        lum = (
+            0.299 * crop_rgb[:, :, 0].astype(np.float32)
+            + 0.587 * crop_rgb[:, :, 1].astype(np.float32)
+            + 0.114 * crop_rgb[:, :, 2].astype(np.float32)
+        )
+        alpha = ((lum < 240).astype(np.uint8)) * 255
+        rgba = np.zeros((bh, bw, 4), dtype=np.uint8)
+        rgba[:, :, :3] = crop_rgb
+        rgba[:, :, 3] = alpha
+        path = out_dir / f"picto_{i:03d}.png"
+        Image.fromarray(rgba, mode="RGBA").save(path)
+        layers.append(_ObjectLayer(
+            bbox=(x, y, bw, bh),
+            z=i + 1000,  # 큰 z = 위에 (textbox 직전)
+            area_ratio=float(bw * bh) / (w * h),
+            score=1.0,
+            alpha_path=path,
+        ))
+    return layers
 
 
 def compose_image_split_pptx_multi(
@@ -672,6 +974,7 @@ def compose_image_split_pptx_multi(
             text_layout=sd["text_layout"],
             object_layers=sd["object_layers"],
             font_name=font_name,
+            shapes_layout=sd.get("shapes_layout"),
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))
@@ -851,23 +1154,67 @@ def convert_image_split_multi(
             emit(f"[{i}/{n}] 주변색 fill 로 텍스트 제거", base_pct + pct_per * 0.25)
             remove_text_solid_fill(img_path, text_layout, out_png=clean_path)
 
-        check_cancel()
-        emit(f"[{i}/{n}] SAM2 로 객체 추출", base_pct + pct_per * 0.65)
-        layers, layers_json = extract_objects_sam2_clean(
-            clean_path, out_dir=slide_dir, options=options,
-        )
+        shapes_layout: dict | None = None
+        layers_json: Path | None = None
+
+        if options.use_native_shapes:
+            check_cancel()
+            emit(f"[{i}/{n}] Codex Vision 으로 도형/픽토그램 분석", base_pct + pct_per * 0.60)
+            shapes_json_path = slide_dir / "shapes_layout.json"
+            try:
+                shapes_layout = analyze_shapes_with_codex(
+                    clean_path, out_json=shapes_json_path,
+                )
+                shapes_layout = normalize_shapes_to_image_size(shapes_layout, target_size)
+                if "_normalized_from" in shapes_layout:
+                    shapes_json_path.write_text(
+                        json.dumps(shapes_layout, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                # 픽토그램은 codex bbox 에서 직접 alpha crop (SAM2 보다 정확)
+                emit(f"[{i}/{n}] 픽토그램 alpha crop", base_pct + pct_per * 0.85)
+                layers = crop_pictograms_from_codex_shapes(
+                    clean_path, shapes_layout, out_dir=slide_dir / "objects",
+                )
+                # layers_json 도 저장 (디버깅용)
+                layers_json = slide_dir / "object_layers.json"
+                layers_json.write_text(json.dumps({
+                    "image_size": list(target_size),
+                    "layer_count": len(layers),
+                    "source": "codex_pictogram_bbox",
+                    "layers": [
+                        {"bbox": ly.bbox, "z": ly.z, "area_ratio": ly.area_ratio,
+                         "alpha_path": str(ly.alpha_path.relative_to(slide_dir))}
+                        for ly in layers
+                    ],
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception as exc:
+                emit(f"[{i}/{n}] codex shape 분석 실패 → SAM2 fallback: {exc}",
+                     base_pct + pct_per * 0.65)
+                layers, layers_json = extract_objects_sam2_clean(
+                    clean_path, out_dir=slide_dir, options=options,
+                )
+                shapes_layout = None
+        else:
+            check_cancel()
+            emit(f"[{i}/{n}] SAM2 로 객체 추출", base_pct + pct_per * 0.65)
+            layers, layers_json = extract_objects_sam2_clean(
+                clean_path, out_dir=slide_dir, options=options,
+            )
 
         slides_data.append({
             "image_size": target_size,
             "background_path": clean_path,
             "text_layout": text_layout,
             "object_layers": layers,
+            "shapes_layout": shapes_layout,
         })
         last_clean_bg = clean_path
         last_text_json = text_json
         last_layers_json = layers_json
+        n_shapes = len(shapes_layout.get("shapes", [])) if shapes_layout else 0
         emit(f"[{i}/{n}] 슬라이드 완료 ({len(text_layout.get('texts', []))} 텍스트, "
-             f"{len(layers)} 객체)", base_pct + pct_per)
+             f"{n_shapes} shape, {len(layers)} 픽토그램)", base_pct + pct_per)
 
     check_cancel()
     emit(f"PPTX 합성 ({n} 슬라이드)", 95)

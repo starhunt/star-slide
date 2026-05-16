@@ -142,6 +142,7 @@ def create_app() -> FastAPI:
                 "reconstructionMode": "auto",
                 "textEraseMode": "codex_imagegen",
                 "backgroundMode": "white",
+                "useNativeShapes": True,
             },
         }
 
@@ -1053,6 +1054,7 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             reconstruction_mode=str(payload.get("reconstructionMode") or "auto"),
             text_erase_mode=str(payload.get("textEraseMode") or "codex_imagegen"),
             background_mode=str(payload.get("backgroundMode") or "white"),
+            use_native_shapes=bool(payload.get("useNativeShapes", True)),
         )
         previews_dir = job_dir / "artifacts" / "previews"
 
@@ -2408,6 +2410,7 @@ INDEX_HTML = r"""<!doctype html>
         <label class="checkline"><input id="s_sam3" type="checkbox" /> SAM3 bbox refinement</label>
         <label class="checkline"><input id="s_editableEmbeddedText" type="checkbox" /> <span data-i18n="options.editableEmbeddedText">큰 이미지 내부 텍스트 편집 가능 유지</span></label>
         <label class="checkline"><input id="s_keepIntermediates" type="checkbox" /> <span data-i18n="options.keepIntermediates">큰 중간 산출물 보존</span></label>
+        <label class="checkline"><input id="s_useNativeShapes" type="checkbox" /> <span data-i18n="options.useNativeShapes">image_split: PPT native shape 사용 (큰 박스/카드/화살표 직접 편집 가능)</span></label>
         <div>
           <div class="label-row">
             <label for="s_watermarkMode" data-i18n="options.watermarkMode">워터마크만 제거 모드</label>
@@ -2581,6 +2584,7 @@ INDEX_HTML = r"""<!doctype html>
       <label class="checkline"><input id="sam3" type="checkbox" /> SAM3 bbox refinement</label>
       <label class="checkline"><input id="editableEmbeddedText" type="checkbox" /> <span data-i18n="options.editableEmbeddedText">큰 이미지 내부 텍스트 편집 가능 유지</span></label>
       <label class="checkline"><input id="keepIntermediates" type="checkbox" /> <span data-i18n="options.keepIntermediates">큰 중간 산출물 보존</span></label>
+      <label class="checkline"><input id="useNativeShapes" type="checkbox" /> <span data-i18n="options.useNativeShapes">image_split: PPT native shape 사용</span></label>
       <div>
         <div class="label-row">
           <label for="watermarkMode" data-i18n="options.watermarkMode">워터마크만 제거 모드</label>
@@ -2664,7 +2668,7 @@ INDEX_HTML = r"""<!doctype html>
       return _pptxPreviewModulePromise;
     }
 
-    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode","reconstructionMode","textEraseMode","backgroundMode"];
+    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode","reconstructionMode","textEraseMode","backgroundMode","useNativeShapes"];
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
     const languageKey = "starSlideLanguage";
@@ -2726,6 +2730,7 @@ INDEX_HTML = r"""<!doctype html>
         "options.bgWhite": "white — 흰 캔버스 (깔끔)",
         "options.bgTransparent": "transparent — 슬라이드 기본",
         "options.bgClean": "clean — 텍스트 제거 이미지 통째 (시각 충실)",
+        "options.useNativeShapes": "image_split: PPT native shape 사용 (큰 박스/카드/화살표 직접 편집 가능)",
         "help.reconstructionMode": "단일 이미지/deck 모두 적용. image_split: Codex Vision 으로 텍스트+위치 추출 → Codex image_gen 으로 텍스트 지운 배경 → SAM2 로 객체 누끼 → editable PPTX 재조합. 슬라이드당 60-120초.",
         "help.textEraseMode": "image_split 전용. codex_imagegen: 그라데이션/복잡한 배경에 우수 (~60s). solid: 단색/카드 배경에 빠르게 적합 (~1s).",
         "help.backgroundMode": "image_split 전용. white: 흰 캔버스 위에 alpha 객체+textbox (default, 객체 분리 명확). transparent: PowerPoint 기본 슬라이드 배경. clean: Codex 텍스트 제거 이미지를 통째 깔기 (시각 100% 충실하지만 객체 이동 시 같은 모양 잔존).",
@@ -2900,6 +2905,7 @@ INDEX_HTML = r"""<!doctype html>
         "options.bgWhite": "white — clean canvas (default)",
         "options.bgTransparent": "transparent — slide default",
         "options.bgClean": "clean — text-erased image full backdrop (faithful)",
+        "options.useNativeShapes": "image_split: use PPT native shapes (containers/cards/arrows are directly editable)",
         "help.reconstructionMode": "Single image or deck input. image_split: Codex Vision extracts text+positions, Codex image_gen erases text into a clean background, SAM2 masks each object → editable PPTX. Takes ~60-120s per slide.",
         "help.textEraseMode": "image_split only. codex_imagegen: best for gradients/complex backgrounds (~60s). solid: faster for flat/card backgrounds (~1s).",
         "help.backgroundMode": "image_split only. white: white canvas + alpha objects + textbox (default, object separation is clearest). transparent: PowerPoint default slide background. clean: Codex's text-erased image as full backdrop (100%% visually faithful but moving an object leaves the same shape underneath).",
@@ -3347,6 +3353,7 @@ INDEX_HTML = r"""<!doctype html>
       reconstructionMode: "s_reconstructionMode",
       textEraseMode: "s_textEraseMode",
       backgroundMode: "s_backgroundMode",
+      useNativeShapes: "s_useNativeShapes",
     };
 
     function applySidebarOptions(merged) {
@@ -3561,6 +3568,7 @@ INDEX_HTML = r"""<!doctype html>
         reconstructionMode: $("reconstructionMode").value || "auto",
         textEraseMode: $("textEraseMode").value || "codex_imagegen",
         backgroundMode: $("backgroundMode").value || "white",
+        useNativeShapes: $("useNativeShapes").checked,
       };
     }
 
@@ -3796,6 +3804,7 @@ INDEX_HTML = r"""<!doctype html>
         reconstructionMode: v("s_reconstructionMode", "auto") || "auto",
         textEraseMode: v("s_textEraseMode", "codex_imagegen") || "codex_imagegen",
         backgroundMode: v("s_backgroundMode", "white") || "white",
+        useNativeShapes: checked("s_useNativeShapes"),
       };
       if (includeProvider) data.provider = provider;
       return data;

@@ -60,6 +60,11 @@ class NotebookLmAutoOptions:
     #   "transparent" — 배경 picture 없음 (PowerPoint 기본 슬라이드 배경)
     #   "clean"       — Codex 가 만든 텍스트 제거 이미지 통째 깔기 (시각 충실, 객체 이중 합성)
     background_mode: str = "white"
+    # image_split 객체 추출 방식:
+    #   True  — Codex Vision 으로 도형 분석 → PPT native shape (rect/oval/arrow) +
+    #           픽토그램 bbox alpha crop. 진짜 편집 가능한 layered 객체. (default)
+    #   False — SAM2 auto-mask 로 alpha PNG 만 (이전 동작)
+    use_native_shapes: bool = True
 
 
 @dataclass(frozen=True)
@@ -589,6 +594,7 @@ def _convert_image_split(
     split_options = ImageSplitOptions(
         text_erase_mode=options.text_erase_mode,
         background_mode=options.background_mode,
+        use_native_shapes=options.use_native_shapes,
     )
     split_workdir = workdir / "image_split"
     result = convert_image_split_multi(
