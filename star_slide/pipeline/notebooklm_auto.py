@@ -47,6 +47,14 @@ class NotebookLmAutoOptions:
     #   "detail" — LaMa 인페인팅으로 자연스럽게 복원 (슬라이드당 1~3초 추가,
     #              첫 호출 시 ~196MB 모델 다운로드)
     watermark_mode: str = "off"
+    # 재구성 모드 (단일 이미지 입력에서만 image_split 모드 적용):
+    #   "auto"        — 기존 vector + hybrid 자동 선택 (기본)
+    #   "image_split" — Codex Vision + image_gen + SAM2 누끼 (단일 이미지 권장)
+    reconstruction_mode: str = "auto"
+    # image_split 모드에서 텍스트 제거 방식:
+    #   "codex_imagegen" — Codex CLI image_gen 2.0 호출 (~30-60s, 그라데이션 보존 우수)
+    #   "solid"          — 주변색 ring sample fill (~1s, 단색 배경 적합)
+    text_erase_mode: str = "codex_imagegen"
 
 
 @dataclass(frozen=True)
@@ -547,6 +555,97 @@ def _convert_watermark_only(
     )
 
 
+def _convert_image_split(
+    *,
+    input_image: Path,
+    input_path: Path,
+    output_path: Path,
+    workdir: Path,
+    options: NotebookLmAutoOptions,
+    emit: Callable[[str, float], None],
+    check_cancel: Callable[[], None],
+    pre_cleanup_hook: Callable[[Path], None] | None,
+    keep_intermediates: bool,
+) -> NotebookLmAutoResult:
+    """단일 이미지 → Codex Vision + image_gen + SAM2 누끼 → editable PPTX.
+
+    convert_image_split 모듈을 호출하고 결과물을 web 의 기존 artifact/preview
+    구조 (qa_selected/montage.png, artifacts/report.json) 와 호환되도록 후처리.
+    """
+    from star_slide.pipeline.codex_image_split import (
+        ImageSplitOptions,
+        convert_image_split,
+    )
+
+    check_cancel()
+    emit("image_split 파이프라인 시작 (Codex Vision + image_gen + SAM2)", 5)
+
+    split_options = ImageSplitOptions(
+        text_erase_mode=options.text_erase_mode,
+    )
+    # workdir 안에 image_split 만의 sub-dir 사용 (다른 모드와 격리)
+    split_workdir = workdir / "image_split"
+    result = convert_image_split(
+        input_image=input_image,
+        output_pptx=output_path,
+        workdir=split_workdir,
+        options=split_options,
+        progress=emit,
+        cancel=lambda: False,  # check_cancel 은 codex 호출 사이에 위치
+    )
+
+    # 미리보기/썸네일 호환: clean bg 를 qa_selected/slide-1.png 로 복사
+    qa_selected_dir = workdir / "qa_selected"
+    qa_selected_dir.mkdir(parents=True, exist_ok=True)
+    if result.clean_bg_png.exists():
+        with contextlib.suppress(OSError):
+            shutil.copy2(result.clean_bg_png, qa_selected_dir / "slide-1.png")
+    # web preview 가 montage.png 를 찾으므로 같은 이미지를 montage 로도 사용
+    if result.clean_bg_png.exists():
+        with contextlib.suppress(OSError):
+            shutil.copy2(result.clean_bg_png, qa_selected_dir / "montage.png")
+
+    artifact_dir = workdir.parent / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    report_path = artifact_dir / "report.json"
+    report_path.write_text(json.dumps({
+        "input": str(input_path),
+        "output": str(output_path),
+        "mode": "image_split",
+        "text_erase_mode": options.text_erase_mode,
+        "elapsed_sec": result.elapsed_sec,
+        "text_layout_json": str(result.text_layout_json),
+        "object_layers_json": str(result.object_layers_json),
+        "clean_bg_png": str(result.clean_bg_png),
+        "selected_qa": [],
+        "vector_qa": [],
+        "hybrid_qa": [],
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    montage_artifact = artifact_dir / "montage.png"
+    if result.clean_bg_png.exists() and not montage_artifact.exists():
+        with contextlib.suppress(OSError):
+            shutil.copy2(result.clean_bg_png, montage_artifact)
+
+    if pre_cleanup_hook is not None and workdir.exists():
+        with contextlib.suppress(Exception):
+            pre_cleanup_hook(workdir)
+    if not keep_intermediates and workdir.exists():
+        shutil.rmtree(workdir)
+
+    emit("완료", 100)
+    return NotebookLmAutoResult(
+        output=output_path,
+        workdir=workdir,
+        selected_layout_dir=split_workdir,
+        report=report_path,
+        vector_pptx=output_path,
+        hybrid_pptx=output_path,
+        artifact_dir=artifact_dir,
+        montage=montage_artifact if montage_artifact.exists() else None,
+    )
+
+
 def convert_notebooklm_auto(
     *,
     input_path: Path,
@@ -593,6 +692,21 @@ def convert_notebooklm_auto(
             pre_cleanup_hook=pre_cleanup_hook,
             keep_intermediates=options.keep_intermediates,
             detail=(options.watermark_mode == "detail"),
+        )
+
+    # image_split 모드 — 단일 이미지에 한해 Codex Vision + image_gen + SAM2 누끼.
+    # deck (다중 슬라이드) 입력에는 적용하지 않음 (Codex 호출 시간/비용 고려).
+    if options.reconstruction_mode == "image_split" and len(images) == 1:
+        return _convert_image_split(
+            input_image=images[0],
+            input_path=input_path,
+            output_path=output_path,
+            workdir=workdir,
+            options=options,
+            emit=emit,
+            check_cancel=check_cancel,
+            pre_cleanup_hook=pre_cleanup_hook,
+            keep_intermediates=options.keep_intermediates,
         )
 
     check_cancel()

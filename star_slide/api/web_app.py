@@ -139,6 +139,8 @@ def create_app() -> FastAPI:
                 "editableEmbeddedText": True,
                 "layoutFailureMode": "image_fallback",
                 "watermarkMode": "off",
+                "reconstructionMode": "auto",
+                "textEraseMode": "codex_imagegen",
             },
         }
 
@@ -896,6 +898,12 @@ def job_snapshot(job: JobState) -> dict[str, Any]:
     if job.status != "running" or not job.workdir:
         return data
 
+    # image_split 모드는 vector/hybrid layout 디렉토리를 만들지 않으므로
+    # 자동 phase override (vector_layouts/raster_groups 카운트 기반) 를 건너뜀.
+    # 실제 progress/phase 는 _convert_image_split 내부 emit() 가 그대로 남김.
+    if (job.options or {}).get("reconstructionMode") == "image_split":
+        return data
+
     workdir = Path(job.workdir)
     images = sorted((workdir / "images").glob("*.png"))
     total = len(images)
@@ -1041,6 +1049,8 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             editable_embedded_text=bool(payload.get("editableEmbeddedText", True)),
             layout_failure_mode=str(payload.get("layoutFailureMode") or "image_fallback"),
             watermark_mode=str(payload.get("watermarkMode") or "off"),
+            reconstruction_mode=str(payload.get("reconstructionMode") or "auto"),
+            text_erase_mode=str(payload.get("textEraseMode") or "codex_imagegen"),
         )
         previews_dir = job_dir / "artifacts" / "previews"
 
@@ -2407,6 +2417,26 @@ INDEX_HTML = r"""<!doctype html>
             <option value="detail" data-i18n="options.watermarkDetail">디테일 — LaMa 인페인팅</option>
           </select>
         </div>
+        <div>
+          <div class="label-row">
+            <label for="s_reconstructionMode" data-i18n="options.reconstructionMode">재구성 모드 (단일 이미지)</label>
+            <span class="help" title="단일 이미지 입력에서만 적용됩니다. image_split 모드는 Codex Vision 으로 텍스트 추출 + Codex image_gen 으로 텍스트 제거 + SAM2 로 객체 누끼 → editable PPTX 재조합. 결과 품질이 더 높지만 슬라이드당 60-120초 소요." data-i18n-title="help.reconstructionMode">?</span>
+          </div>
+          <select id="s_reconstructionMode">
+            <option value="auto" data-i18n="options.reconstructionAuto">기본 (vector + hybrid 자동 선택)</option>
+            <option value="image_split" data-i18n="options.reconstructionImageSplit">image_split — Codex + SAM2 누끼 (단일 이미지)</option>
+          </select>
+        </div>
+        <div>
+          <div class="label-row">
+            <label for="s_textEraseMode" data-i18n="options.textEraseMode">텍스트 제거 방식 (image_split)</label>
+            <span class="help" title="image_split 모드에서만 사용. codex_imagegen: Codex CLI image_gen 으로 텍스트 제거 (~30-60초, 그라데이션 보존 우수). solid: 주변색 ring sample fill (~1초, 단색 배경 적합)." data-i18n-title="help.textEraseMode">?</span>
+          </div>
+          <select id="s_textEraseMode">
+            <option value="codex_imagegen" data-i18n="options.eraseCodex">Codex image_gen (느림, 고품질)</option>
+            <option value="solid" data-i18n="options.eraseSolid">주변색 fill (빠름)</option>
+          </select>
+        </div>
       </div>
 
       <div class="hint" style="margin-top:14px;" data-i18n-html="sidebar.sessionHint">
@@ -2549,6 +2579,26 @@ INDEX_HTML = r"""<!doctype html>
           <option value="detail" data-i18n="options.watermarkDetail">디테일 — LaMa 인페인팅</option>
         </select>
       </div>
+      <div>
+        <div class="label-row">
+          <label for="reconstructionMode" data-i18n="options.reconstructionMode">재구성 모드 (단일 이미지)</label>
+          <span class="help" title="단일 이미지 입력에서만 적용. image_split: Codex Vision + image_gen + SAM2 누끼." data-i18n-title="help.reconstructionMode">?</span>
+        </div>
+        <select id="reconstructionMode">
+          <option value="auto" data-i18n="options.reconstructionAuto">기본 (vector + hybrid 자동 선택)</option>
+          <option value="image_split" data-i18n="options.reconstructionImageSplit">image_split — Codex + SAM2 누끼</option>
+        </select>
+      </div>
+      <div>
+        <div class="label-row">
+          <label for="textEraseMode" data-i18n="options.textEraseMode">텍스트 제거 방식 (image_split)</label>
+          <span class="help" title="codex_imagegen: Codex CLI image_gen (느림 60s, 그라데이션 보존). solid: 주변색 fill (빠름 1s)." data-i18n-title="help.textEraseMode">?</span>
+        </div>
+        <select id="textEraseMode">
+          <option value="codex_imagegen" data-i18n="options.eraseCodex">Codex image_gen (느림, 고품질)</option>
+          <option value="solid" data-i18n="options.eraseSolid">주변색 fill (빠름)</option>
+        </select>
+      </div>
     </div>
   </div>
 
@@ -2590,7 +2640,7 @@ INDEX_HTML = r"""<!doctype html>
       return _pptxPreviewModulePromise;
     }
 
-    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode"];
+    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode","reconstructionMode","textEraseMode"];
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
     const languageKey = "starSlideLanguage";
@@ -2642,6 +2692,14 @@ INDEX_HTML = r"""<!doctype html>
         "options.watermarkOff": "사용 안 함 (워터마크제거포함 전체변환)",
         "options.watermarkFast": "빠름 — 단순 페인트",
         "options.watermarkDetail": "디테일 — LaMa 인페인팅",
+        "options.reconstructionMode": "재구성 모드 (단일 이미지)",
+        "options.reconstructionAuto": "기본 (vector + hybrid 자동 선택)",
+        "options.reconstructionImageSplit": "image_split — Codex + SAM2 누끼 (단일 이미지)",
+        "options.textEraseMode": "텍스트 제거 방식 (image_split)",
+        "options.eraseCodex": "Codex image_gen (느림 60s, 고품질)",
+        "options.eraseSolid": "주변색 fill (빠름 1s)",
+        "help.reconstructionMode": "단일 이미지 입력에서만 적용. image_split: Codex Vision 으로 텍스트+위치 추출 + Codex image_gen 으로 텍스트 지운 배경 + SAM2 로 객체 누끼 → editable PPTX 재조합. 슬라이드당 60-120초.",
+        "help.textEraseMode": "image_split 전용. codex_imagegen: 그라데이션/복잡한 배경에 우수 (~60s). solid: 단색/카드 배경에 빠르게 적합 (~1s).",
         "help.retries": "layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수입니다. 기본 2회이며, 네트워크/LLM 일시 실패를 흡수합니다.",
         "help.llmParallel": "여러 슬라이드의 LLM 분석 요청을 동시에 몇 개까지 실행할지 정합니다.",
         "help.fontScale": "PPTX로 다시 렌더링할 때 모든 편집 가능 텍스트 크기에 곱하는 값입니다.",
@@ -2803,6 +2861,14 @@ INDEX_HTML = r"""<!doctype html>
         "options.watermarkOff": "Off (full conversion including watermark removal)",
         "options.watermarkFast": "Fast — simple paint",
         "options.watermarkDetail": "Detail — LaMa inpaint",
+        "options.reconstructionMode": "Reconstruction mode (single image)",
+        "options.reconstructionAuto": "Default (vector + hybrid auto-pick)",
+        "options.reconstructionImageSplit": "image_split — Codex + SAM2 cutout (single image)",
+        "options.textEraseMode": "Text-erase mode (image_split)",
+        "options.eraseCodex": "Codex image_gen (slow ~60s, high quality)",
+        "options.eraseSolid": "Surrounding-color fill (fast ~1s)",
+        "help.reconstructionMode": "Single-image input only. image_split: Codex Vision extracts text+positions, Codex image_gen erases text into a clean background, SAM2 masks each object → editable PPTX. Takes ~60-120s per slide.",
+        "help.textEraseMode": "image_split only. codex_imagegen: best for gradients/complex backgrounds (~60s). solid: faster for flat/card backgrounds (~1s).",
         "help.retries": "How many times to retry the same slide when layout JSON generation fails. Default is 2 to absorb transient network or LLM failures.",
         "help.llmParallel": "Maximum number of slide analysis requests to run in parallel.",
         "help.fontScale": "Multiplier applied to editable text sizes when rendering the PPTX.",
@@ -3244,6 +3310,8 @@ INDEX_HTML = r"""<!doctype html>
       editableEmbeddedText: "s_editableEmbeddedText",
       keepIntermediates: "s_keepIntermediates",
       watermarkMode: "s_watermarkMode",
+      reconstructionMode: "s_reconstructionMode",
+      textEraseMode: "s_textEraseMode",
     };
 
     function applySidebarOptions(merged) {
@@ -3455,6 +3523,8 @@ INDEX_HTML = r"""<!doctype html>
         editableEmbeddedText: $("editableEmbeddedText").checked,
         keepIntermediates: $("keepIntermediates").checked,
         watermarkMode: $("watermarkMode").value || "off",
+        reconstructionMode: $("reconstructionMode").value || "auto",
+        textEraseMode: $("textEraseMode").value || "codex_imagegen",
       };
     }
 
@@ -3687,6 +3757,8 @@ INDEX_HTML = r"""<!doctype html>
         editableEmbeddedText: checked("s_editableEmbeddedText"),
         keepIntermediates: checked("s_keepIntermediates"),
         watermarkMode: v("s_watermarkMode", "off") || "off",
+        reconstructionMode: v("s_reconstructionMode", "auto") || "auto",
+        textEraseMode: v("s_textEraseMode", "codex_imagegen") || "codex_imagegen",
       };
       if (includeProvider) data.provider = provider;
       return data;

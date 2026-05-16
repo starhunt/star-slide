@@ -1,0 +1,629 @@
+"""단일 이미지 → editable PPTX 변환: Codex Vision + image_gen + SAM2 파이프라인.
+
+experiments/diagram_split/v7_*.py 의 4단계 PoC 를 라이브러리화 한 모듈.
+notebooklm_auto.py 의 reconstruction_mode='image_split' 에서 호출된다.
+
+핵심 흐름:
+  Step 1. Codex CLI Vision LLM → text_layout.json
+          (텍스트 + bbox + font_size_px + color + alignment + bold)
+  Step 2. 텍스트 제거 (두 모드):
+          - text_erase_mode='codex_imagegen': Codex image_gen 2.0 으로 텍스트 지운 이미지 생성
+          - text_erase_mode='solid': 각 bbox 외곽 ring 픽셀 mode 색상으로 fill (빠름)
+  Step 3. SAM2.1 auto-mask (글자 간섭 없음) → 깨끗한 객체 alpha PNG crop
+  Step 4. 재조합: 깨끗한 배경 + alpha 객체 (z-order) + editable textbox
+          (East Asian font 메타 명시)
+
+설계 원칙:
+  - notebooklm_auto 와 동일한 emit/check_cancel 시그니처
+  - 모든 중간 산출물을 workdir 아래에 저장 (디버깅/QA 용)
+  - 외부 도구 (codex CLI) 가 실패하면 fallback (solid fill 모드로 자동 전환)
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import time
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import numpy as np
+from lxml import etree
+from PIL import Image
+from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.oxml.ns import qn
+from pptx.util import Emu, Pt
+
+from star_slide.segmentation.sam2_auto import Sam2Mask, run_sam2_auto
+
+EMU_PER_INCH = 914400
+PT_PER_INCH = 72.0
+SLIDE_W_EMU = 12192000   # 13.333" — 표준 16:9
+SLIDE_H_EMU = 6858000    #  7.5"
+DEFAULT_FONT = "Apple SD Gothic Neo"
+
+
+@dataclass(frozen=True)
+class ImageSplitOptions:
+    """단일 이미지 분할 변환 옵션."""
+
+    text_erase_mode: str = "codex_imagegen"
+    """텍스트 제거 방식: 'codex_imagegen'|'solid'.
+    'codex_imagegen' 은 Codex CLI image_gen 2.0 호출 (~30-60s). 그라데이션 보존 우수.
+    'solid' 은 주변색 ring sample fill (~1s). 단색 배경에 적합."""
+
+    sam_resize: int = 1920
+    """SAM2 입력 리사이즈 폭. 0=원본 사용 (정밀하지만 느림)"""
+
+    sam_points_per_side: int = 48
+    """SAM2 grid 한 변의 point 수 (총 = side²). dense=48 권장."""
+
+    sam_pred_iou_thresh: float = 0.80
+    sam_stability_thresh: float = 0.88
+
+    min_object_area_ratio: float = 0.0005
+    max_object_area_ratio: float = 0.55
+    object_iou_dedupe_threshold: float = 0.85
+
+    font_name: str = DEFAULT_FONT
+
+
+@dataclass(frozen=True)
+class ImageSplitResult:
+    output: Path
+    workdir: Path
+    text_layout_json: Path
+    clean_bg_png: Path
+    object_layers_json: Path
+    elapsed_sec: float
+
+
+@dataclass
+class _TextItem:
+    text: str
+    bbox: tuple[float, float, float, float]
+    font_size_px: float
+    color: str
+    is_bold: bool
+    alignment: str
+
+
+@dataclass
+class _ObjectLayer:
+    bbox: tuple[int, int, int, int]
+    z: int
+    area_ratio: float
+    score: float
+    alpha_path: Path
+
+
+# ============================================================
+# Step 1 — Codex Vision 으로 텍스트 layout JSON 추출
+# ============================================================
+
+
+CODEX_TEXT_PROMPT = """이미지의 모든 텍스트를 JSON 으로 추출해주세요. 다른 설명이나 코드블록 없이 순수 JSON만 반환해주세요.
+
+형식:
+{
+  "image_size": [width_px, height_px],
+  "texts": [
+    {
+      "text": "텍스트 내용",
+      "bbox": [x, y, w, h],
+      "font_size_px": 60,
+      "color": "#hex",
+      "is_bold": true,
+      "alignment": "center"
+    }
+  ]
+}
+
+요구사항:
+- 모든 한글/영문 텍스트 빠짐없이 (제목, 부제, 라벨, 박스 안 글, 따옴표 안 글, footer 등)
+- bbox 픽셀 좌표 (좌상단 기준, 가로세로 px)
+- font_size_px = 글자 자체 픽셀 높이 (라인 높이 X)
+- color = 글자의 주된 hex 색
+- 텍스트 라인 단위 (예: '광주 17개 대학 IDP' 한 줄로, 단어 분리하지 말 것)
+- alignment = 'left'|'center'|'right'
+- is_bold = 굵은 글씨 여부
+"""
+
+
+def analyze_text_with_codex(
+    image_path: Path,
+    *,
+    out_json: Path,
+    timeout_sec: float = 600.0,
+) -> dict:
+    """Codex CLI Vision LLM 으로 이미지의 텍스트 + 위치 추출.
+
+    내부적으로 `codex exec --dangerously-bypass-approvals-and-sandbox -i <img>` 실행.
+    실패 시 RuntimeError.
+    """
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "codex", "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check", "--ephemeral",
+        "-i", str(image_path),
+        "-o", str(out_json),
+        CODEX_TEXT_PROMPT,
+    ]
+    completed = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout_sec, check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"Codex 텍스트 분석 실패 (exit={completed.returncode}): "
+            f"{completed.stderr[:500]}"
+        )
+    if not out_json.exists() or out_json.stat().st_size == 0:
+        raise RuntimeError(
+            f"Codex 결과 파일이 비어있거나 없음: {out_json}\n"
+            f"stdout 마지막 500자:\n{completed.stdout[-500:]}"
+        )
+    return json.loads(out_json.read_text(encoding="utf-8"))
+
+
+# ============================================================
+# Step 2 — 텍스트 제거
+# ============================================================
+
+
+CODEX_REMOVE_TEXT_PROMPT = """첨부된 한글 인포그래픽에서 모든 텍스트(한글+영문)만 정확히 제거한 새 이미지를 image_gen 도구로 생성해줘.
+- 큰 제목, 부제, 라벨, 박스 안 모든 글자, 픽토그램 라벨, 따옴표 안 글, 하단 footer 모두 제거
+- 다른 모든 시각 요소(컬러 박스, 픽토그램 아이콘, 화살표, 그라데이션, 박스 형태와 색)는 픽셀 단위로 정확히 보존
+- 글자 자리는 주변 배경색/그라데이션으로 자연스럽게 복원
+- 입력 이미지의 원본 비율 유지
+생성된 PNG 파일 경로만 마지막에 출력.
+"""
+
+
+def remove_text_codex_imagegen(
+    image_path: Path,
+    *,
+    out_png: Path,
+    target_size: tuple[int, int] | None = None,
+    timeout_sec: float = 600.0,
+) -> Path:
+    """Codex image_gen 2.0 으로 텍스트만 제거된 이미지 생성.
+
+    Codex 가 이미지를 만들고 자동으로 프로젝트 디렉토리에 복사하므로,
+    stdout 마지막 줄의 PNG 경로를 파싱해 out_png 로 옮긴다.
+    target_size 가 주어지면 LANCZOS 로 리사이즈.
+    """
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "codex", "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check", "--ephemeral",
+        "-i", str(image_path),
+        CODEX_REMOVE_TEXT_PROMPT,
+    ]
+    completed = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout_sec, check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"Codex image_gen 실패 (exit={completed.returncode}): "
+            f"{completed.stderr[:500]}"
+        )
+    # stdout 마지막 줄에 절대 경로 PNG 출력 기대 (codex 가 보통 그렇게 줌)
+    stdout_lines = [ln.strip() for ln in completed.stdout.splitlines() if ln.strip()]
+    candidate_path: Path | None = None
+    for line in reversed(stdout_lines):
+        if line.endswith(".png") and Path(line).exists():
+            candidate_path = Path(line)
+            break
+    if candidate_path is None:
+        raise RuntimeError(
+            f"Codex image_gen 출력 PNG 경로를 찾을 수 없음. stdout 마지막 500자:\n"
+            f"{completed.stdout[-500:]}"
+        )
+    shutil.copy2(candidate_path, out_png)
+    if target_size is not None:
+        with Image.open(out_png) as im:
+            if im.size != target_size:
+                im.convert("RGB").resize(target_size, Image.LANCZOS).save(out_png)
+    return out_png
+
+
+def _quantize_color(rgb: tuple[int, int, int], step: int = 16) -> tuple[int, int, int]:
+    return tuple((c // step) * step + step // 2 for c in rgb)
+
+
+def _sample_ring_color(
+    arr: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    *,
+    ring_thickness: int = 8,
+    pad: int = 2,
+) -> tuple[int, int, int]:
+    h, w = arr.shape[:2]
+    x, y, bw, bh = bbox
+    x0 = max(0, x - ring_thickness - pad)
+    y0 = max(0, y - ring_thickness - pad)
+    x1 = min(w, x + bw + ring_thickness + pad)
+    y1 = min(h, y + bh + ring_thickness + pad)
+    inner_x0 = max(0, x - pad)
+    inner_y0 = max(0, y - pad)
+    inner_x1 = min(w, x + bw + pad)
+    inner_y1 = min(h, y + bh + pad)
+    region = arr[y0:y1, x0:x1].copy()
+    if region.size == 0:
+        return (255, 255, 255)
+    rh, rw = region.shape[:2]
+    mask = np.ones((rh, rw), dtype=bool)
+    mask[inner_y0 - y0:inner_y1 - y0, inner_x0 - x0:inner_x1 - x0] = False
+    ring_pixels = region[mask]
+    if len(ring_pixels) == 0:
+        return (255, 255, 255)
+    quant = [_quantize_color(tuple(p)) for p in ring_pixels]
+    return tuple(int(c) for c in Counter(quant).most_common(1)[0][0])
+
+
+def remove_text_solid_fill(
+    image_path: Path,
+    text_layout: dict,
+    *,
+    out_png: Path,
+    pad: int = 6,
+) -> Path:
+    """text_layout JSON 의 각 bbox 외곽 ring mode 색으로 fill (빠른 fallback).
+
+    그라데이션이 강한 배경에선 약점이지만 단색/카드 배경엔 우수.
+    """
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.open(image_path).convert("RGB")
+    arr = np.asarray(image).copy()
+    h, w = arr.shape[:2]
+    for t in text_layout.get("texts", []):
+        bx, by, bw, bh = t.get("bbox", (0, 0, 0, 0))
+        bx = int(bx)
+        by = int(by)
+        bw = int(bw)
+        bh = int(bh)
+        if bw <= 0 or bh <= 0:
+            continue
+        bg_color = _sample_ring_color(arr, (bx, by, bw, bh), ring_thickness=8, pad=pad)
+        x0 = max(0, bx - pad)
+        y0 = max(0, by - pad)
+        x1 = min(w, bx + bw + pad)
+        y1 = min(h, by + bh + pad)
+        arr[y0:y1, x0:x1] = bg_color
+    Image.fromarray(arr).save(out_png)
+    return out_png
+
+
+# ============================================================
+# Step 3 — SAM2 객체 추출 (깨끗한 배경에서)
+# ============================================================
+
+
+def _upsample_mask(seg_small: np.ndarray, target_size: tuple[int, int]) -> np.ndarray:
+    seg_uint = (seg_small.astype(np.uint8)) * 255
+    seg_full = cv2.resize(seg_uint, target_size, interpolation=cv2.INTER_LINEAR)
+    return seg_full > 127
+
+
+def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+    if a.shape != b.shape:
+        return 0.0
+    inter = np.logical_and(a, b).sum()
+    union = np.logical_or(a, b).sum()
+    return float(inter) / float(union) if union else 0.0
+
+
+def _filter_and_dedupe(
+    masks: list[Sam2Mask],
+    image_size: tuple[int, int],
+    *,
+    min_ratio: float,
+    max_ratio: float,
+    iou_threshold: float,
+) -> list[Sam2Mask]:
+    w, h = image_size
+    total = w * h
+    filtered = [m for m in masks if min_ratio <= m.area / total <= max_ratio]
+    sorted_masks = sorted(filtered, key=lambda m: -m.area)
+    kept: list[Sam2Mask] = []
+    for m in sorted_masks:
+        if not any(_mask_iou(m.segmentation, k.segmentation) > iou_threshold for k in kept):
+            kept.append(m)
+    return kept
+
+
+def _export_alpha_crop(
+    image: Image.Image,
+    mask: np.ndarray,
+    *,
+    out_dir: Path,
+    name: str,
+) -> tuple[tuple[int, int, int, int], Path] | None:
+    ys, xs = np.where(mask)
+    if len(ys) == 0:
+        return None
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    arr = np.asarray(image.convert("RGB"))
+    crop_rgb = arr[y0:y1, x0:x1]
+    crop_mask = mask[y0:y1, x0:x1]
+    rgba = np.zeros((y1 - y0, x1 - x0, 4), dtype=np.uint8)
+    rgba[:, :, :3] = crop_rgb
+    rgba[:, :, 3] = (crop_mask.astype(np.uint8)) * 255
+    out_dir.mkdir(parents=True, exist_ok=True)
+    p = out_dir / name
+    Image.fromarray(rgba, mode="RGBA").save(p)
+    return (x0, y0, x1 - x0, y1 - y0), p
+
+
+def extract_objects_sam2_clean(
+    clean_image_path: Path,
+    *,
+    out_dir: Path,
+    options: ImageSplitOptions,
+) -> tuple[list[_ObjectLayer], Path]:
+    """깨끗한(텍스트 제거된) 이미지에서 SAM2 객체 alpha PNG crop 들 생성.
+
+    out_dir/objects/layer_NNN.png 들 + out_dir/object_layers.json 생성.
+    """
+    image = Image.open(clean_image_path).convert("RGB")
+    px_w, px_h = image.size
+
+    sam_input = image
+    if options.sam_resize and px_w > options.sam_resize:
+        scale = options.sam_resize / px_w
+        sam_input = image.resize((options.sam_resize, int(px_h * scale)))
+    res = run_sam2_auto(
+        sam_input,
+        points_per_side=options.sam_points_per_side,
+        max_masks=400,
+        pred_iou_thresh=options.sam_pred_iou_thresh,
+        stability_score_thresh=options.sam_stability_thresh,
+    )
+
+    full_masks: list[Sam2Mask] = []
+    for m in res.masks:
+        seg = _upsample_mask(m.segmentation, (px_w, px_h))
+        ys, xs = np.where(seg)
+        if len(ys) == 0:
+            continue
+        bbox = (int(xs.min()), int(ys.min()),
+                int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
+        full_masks.append(Sam2Mask(bbox=bbox, segmentation=seg, score=m.score, area=int(seg.sum())))
+
+    deduped = _filter_and_dedupe(
+        full_masks, (px_w, px_h),
+        min_ratio=options.min_object_area_ratio,
+        max_ratio=options.max_object_area_ratio,
+        iou_threshold=options.object_iou_dedupe_threshold,
+    )
+
+    obj_dir = out_dir / "objects"
+    layers: list[_ObjectLayer] = []
+    sorted_masks = sorted(deduped, key=lambda m: -m.area)
+    for i, m in enumerate(sorted_masks):
+        out = _export_alpha_crop(image, m.segmentation, out_dir=obj_dir, name=f"layer_{i:03d}.png")
+        if out is None:
+            continue
+        bbox, path = out
+        layers.append(_ObjectLayer(
+            bbox=bbox, z=i,
+            area_ratio=float(m.area) / (px_w * px_h),
+            score=float(m.score),
+            alpha_path=path,
+        ))
+
+    json_path = out_dir / "object_layers.json"
+    json_path.write_text(json.dumps({
+        "image_size": [px_w, px_h],
+        "layer_count": len(layers),
+        "sam_total_masks": len(full_masks),
+        "layers": [
+            {
+                "bbox": ly.bbox, "z": ly.z,
+                "area_ratio": ly.area_ratio, "score": ly.score,
+                "alpha_path": str(ly.alpha_path.relative_to(out_dir)),
+            }
+            for ly in layers
+        ],
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return layers, json_path
+
+
+# ============================================================
+# Step 4 — PPTX 재조합
+# ============================================================
+
+
+def _set_east_asian_font(rPr, font_name: str) -> None:
+    for tag in ("a:ea", "a:cs"):
+        for el in rPr.findall(qn(tag)):
+            rPr.remove(el)
+    ea = etree.SubElement(rPr, qn("a:ea"))
+    ea.set("typeface", font_name)
+    cs = etree.SubElement(rPr, qn("a:cs"))
+    cs.set("typeface", font_name)
+
+
+def _add_textbox(
+    slide,
+    item: dict,
+    *,
+    scale: float,
+    effective_dpi: float,
+    font_name: str,
+) -> None:
+    bbox = item.get("bbox", (0, 0, 0, 0))
+    if len(bbox) != 4:
+        return
+    x, y, w, h = bbox
+    font_px = float(item.get("font_size_px", 18))
+    font_pt = font_px * PT_PER_INCH / effective_dpi
+    pad_emu = int(font_pt / PT_PER_INCH * EMU_PER_INCH * 0.3)
+    left = int(x * scale) - pad_emu // 2
+    top = int(y * scale) - pad_emu // 2
+    width = int(w * scale) + pad_emu
+    min_h_emu = int(font_pt / PT_PER_INCH * EMU_PER_INCH * 1.4)
+    height = max(int(h * scale) + pad_emu, min_h_emu)
+    if width <= 0 or height <= 0:
+        return
+    tb = slide.shapes.add_textbox(Emu(left), Emu(top), Emu(width), Emu(height))
+    tf = tb.text_frame
+    for attr in ("margin_left", "margin_right", "margin_top", "margin_bottom"):
+        setattr(tf, attr, Emu(0))
+    tf.word_wrap = True
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    p = tf.paragraphs[0]
+    p.alignment = {
+        "left": PP_ALIGN.LEFT,
+        "center": PP_ALIGN.CENTER,
+        "right": PP_ALIGN.RIGHT,
+    }.get(item.get("alignment", "left"), PP_ALIGN.LEFT)
+    run = p.add_run()
+    run.text = item.get("text", "")
+    run.font.name = font_name
+    run.font.size = Pt(round(font_pt, 1))
+    run.font.bold = bool(item.get("is_bold", False))
+    color_hex = item.get("color", "#222222")
+    try:
+        r = int(color_hex[1:3], 16)
+        g = int(color_hex[3:5], 16)
+        b = int(color_hex[5:7], 16)
+        run.font.color.rgb = RGBColor(r, g, b)
+    except Exception:
+        pass
+    _set_east_asian_font(run._r.get_or_add_rPr(), font_name)
+
+
+def compose_image_split_pptx(
+    *,
+    image_size: tuple[int, int],
+    background_path: Path,
+    text_layout: dict,
+    object_layers: list[_ObjectLayer],
+    out_path: Path,
+    font_name: str = DEFAULT_FONT,
+) -> Path:
+    """깨끗한 배경 + alpha 객체 (z-order) + editable textbox 로 1-슬라이드 PPTX 생성."""
+    px_w, _ = image_size
+    scale = SLIDE_W_EMU / px_w
+    effective_dpi = px_w / (SLIDE_W_EMU / EMU_PER_INCH)
+
+    prs = Presentation()
+    prs.slide_width = Emu(SLIDE_W_EMU)
+    prs.slide_height = Emu(SLIDE_H_EMU)
+    blank = prs.slide_layouts[6]
+    slide = prs.slides.add_slide(blank)
+
+    slide.shapes.add_picture(
+        str(background_path), 0, 0,
+        width=Emu(SLIDE_W_EMU), height=Emu(SLIDE_H_EMU),
+    )
+    for ly in sorted(object_layers, key=lambda layer: layer.z):
+        x, y, w, h = ly.bbox
+        slide.shapes.add_picture(
+            str(ly.alpha_path),
+            Emu(int(x * scale)), Emu(int(y * scale)),
+            width=Emu(int(w * scale)), height=Emu(int(h * scale)),
+        )
+    for t in text_layout.get("texts", []):
+        _add_textbox(slide, t, scale=scale, effective_dpi=effective_dpi, font_name=font_name)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(str(out_path))
+    return out_path
+
+
+# ============================================================
+# 통합 entry point — notebooklm_auto 에서 호출
+# ============================================================
+
+
+def convert_image_split(
+    *,
+    input_image: Path,
+    output_pptx: Path,
+    workdir: Path,
+    options: ImageSplitOptions,
+    progress: Callable[[str, float], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> ImageSplitResult:
+    """단일 이미지 → editable PPTX 4단계 파이프라인.
+
+    workdir 아래 모든 중간 산출물 보존:
+      workdir/text_layout.json
+      workdir/02_clean_bg.png  (Step 2 결과)
+      workdir/objects/layer_NNN.png
+      workdir/object_layers.json
+    """
+    def emit(msg: str, pct: float) -> None:
+        if progress is not None:
+            progress(msg, pct)
+
+    def check_cancel() -> None:
+        if cancel is not None and cancel():
+            from star_slide.pipeline.notebooklm_auto import JobCancelledError
+            raise JobCancelledError("convert_image_split cancelled")
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+
+    check_cancel()
+    emit("Codex Vision 으로 텍스트 + 위치 추출 중", 5)
+    text_json_path = workdir / "text_layout.json"
+    text_layout = analyze_text_with_codex(input_image, out_json=text_json_path)
+    emit(f"텍스트 {len(text_layout.get('texts', []))}개 추출", 25)
+
+    check_cancel()
+    image = Image.open(input_image).convert("RGB")
+    target_size = image.size
+
+    clean_path = workdir / "02_clean_bg.png"
+    if options.text_erase_mode == "codex_imagegen":
+        emit("Codex image_gen 으로 텍스트 제거된 배경 생성 중 (~30-60s)", 30)
+        try:
+            remove_text_codex_imagegen(
+                input_image, out_png=clean_path, target_size=target_size,
+            )
+        except Exception as exc:
+            emit(f"Codex image_gen 실패 → solid fill 로 fallback: {exc}", 40)
+            remove_text_solid_fill(input_image, text_layout, out_png=clean_path)
+    else:
+        emit("주변색 fill 로 텍스트 제거 중", 30)
+        remove_text_solid_fill(input_image, text_layout, out_png=clean_path)
+    emit("배경 생성 완료", 60)
+
+    check_cancel()
+    emit(f"SAM2 로 객체 추출 중 (pps={options.sam_points_per_side})", 65)
+    layers, layers_json = extract_objects_sam2_clean(
+        clean_path, out_dir=workdir, options=options,
+    )
+    emit(f"{len(layers)}개 객체 alpha crop", 85)
+
+    check_cancel()
+    emit("PPTX 재조합 중", 90)
+    compose_image_split_pptx(
+        image_size=target_size,
+        background_path=clean_path,
+        text_layout=text_layout,
+        object_layers=layers,
+        out_path=output_pptx,
+        font_name=options.font_name,
+    )
+    emit("완료", 100)
+
+    return ImageSplitResult(
+        output=output_pptx,
+        workdir=workdir,
+        text_layout_json=text_json_path,
+        clean_bg_png=clean_path,
+        object_layers_json=layers_json,
+        elapsed_sec=round(time.perf_counter() - started, 1),
+    )
