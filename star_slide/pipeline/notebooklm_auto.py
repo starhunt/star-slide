@@ -47,14 +47,19 @@ class NotebookLmAutoOptions:
     #   "detail" — LaMa 인페인팅으로 자연스럽게 복원 (슬라이드당 1~3초 추가,
     #              첫 호출 시 ~196MB 모델 다운로드)
     watermark_mode: str = "off"
-    # 재구성 모드 (단일 이미지 입력에서만 image_split 모드 적용):
+    # 재구성 모드:
     #   "auto"        — 기존 vector + hybrid 자동 선택 (기본)
-    #   "image_split" — Codex Vision + image_gen + SAM2 누끼 (단일 이미지 권장)
+    #   "image_split" — Codex Vision + image_gen + SAM2 누끼 (단일 이미지 + deck 모두)
     reconstruction_mode: str = "auto"
     # image_split 모드에서 텍스트 제거 방식:
     #   "codex_imagegen" — Codex CLI image_gen 2.0 호출 (~30-60s, 그라데이션 보존 우수)
     #   "solid"          — 주변색 ring sample fill (~1s, 단색 배경 적합)
     text_erase_mode: str = "codex_imagegen"
+    # image_split 모드의 슬라이드 배경:
+    #   "white"       — 흰 캔버스 + alpha 객체 + textbox (default, 깔끔)
+    #   "transparent" — 배경 picture 없음 (PowerPoint 기본 슬라이드 배경)
+    #   "clean"       — Codex 가 만든 텍스트 제거 이미지 통째 깔기 (시각 충실, 객체 이중 합성)
+    background_mode: str = "white"
 
 
 @dataclass(frozen=True)
@@ -557,7 +562,7 @@ def _convert_watermark_only(
 
 def _convert_image_split(
     *,
-    input_image: Path,
+    input_images: list[Path],
     input_path: Path,
     output_path: Path,
     workdir: Path,
@@ -567,31 +572,32 @@ def _convert_image_split(
     pre_cleanup_hook: Callable[[Path], None] | None,
     keep_intermediates: bool,
 ) -> NotebookLmAutoResult:
-    """단일 이미지 → Codex Vision + image_gen + SAM2 누끼 → editable PPTX.
+    """N장 이미지 → 슬라이드별 Codex Vision + image_gen + SAM2 누끼 → editable PPTX.
 
-    convert_image_split 모듈을 호출하고 결과물을 web 의 기존 artifact/preview
+    convert_image_split_multi 모듈을 호출하고 결과물을 web 의 기존 artifact/preview
     구조 (qa_selected/montage.png, artifacts/report.json) 와 호환되도록 후처리.
     """
     from star_slide.pipeline.codex_image_split import (
         ImageSplitOptions,
-        convert_image_split,
+        convert_image_split_multi,
     )
 
+    n = len(input_images)
     check_cancel()
-    emit("image_split 파이프라인 시작 (Codex Vision + image_gen + SAM2)", 5)
+    emit(f"image_split 파이프라인 시작 ({n} 슬라이드, Codex + SAM2)", 3)
 
     split_options = ImageSplitOptions(
         text_erase_mode=options.text_erase_mode,
+        background_mode=options.background_mode,
     )
-    # workdir 안에 image_split 만의 sub-dir 사용 (다른 모드와 격리)
     split_workdir = workdir / "image_split"
-    result = convert_image_split(
-        input_image=input_image,
+    result = convert_image_split_multi(
+        input_images=input_images,
         output_pptx=output_path,
         workdir=split_workdir,
         options=split_options,
         progress=emit,
-        cancel=lambda: False,  # check_cancel 은 codex 호출 사이에 위치
+        cancel=lambda: False,
     )
 
     # 미리보기/썸네일 호환: clean bg 를 qa_selected/slide-1.png 로 복사
@@ -694,11 +700,11 @@ def convert_notebooklm_auto(
             detail=(options.watermark_mode == "detail"),
         )
 
-    # image_split 모드 — 단일 이미지에 한해 Codex Vision + image_gen + SAM2 누끼.
-    # deck (다중 슬라이드) 입력에는 적용하지 않음 (Codex 호출 시간/비용 고려).
-    if options.reconstruction_mode == "image_split" and len(images) == 1:
+    # image_split 모드 — 단일 이미지 / deck 모두 지원.
+    # 각 슬라이드마다 Codex Vision + image_gen + SAM2 누끼 (~80s/슬라이드).
+    if options.reconstruction_mode == "image_split":
         return _convert_image_split(
-            input_image=images[0],
+            input_images=images,
             input_path=input_path,
             output_path=output_path,
             workdir=workdir,

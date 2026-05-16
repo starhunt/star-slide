@@ -58,6 +58,14 @@ class ImageSplitOptions:
     'codex_imagegen' 은 Codex CLI image_gen 2.0 호출 (~30-60s). 그라데이션 보존 우수.
     'solid' 은 주변색 ring sample fill (~1s). 단색 배경에 적합."""
 
+    background_mode: str = "white"
+    """슬라이드 배경 처리:
+      'white'       — 흰 캔버스 + alpha 객체 + textbox (default, 깔끔)
+      'transparent' — 배경 picture 없음 (PowerPoint 기본 슬라이드 배경 유지)
+      'clean'       — Codex 가 만든 텍스트 제거 이미지를 통째로 깔기 (시각 충실하지만
+                      객체와 이중 합성. 사용자가 객체를 옮기면 배경에 같은 모양 잔존)
+    """
+
     sam_resize: int = 1920
     """SAM2 입력 리사이즈 폭. 0=원본 사용 (정밀하지만 느림)"""
 
@@ -558,30 +566,41 @@ def _add_textbox(
     _set_east_asian_font(run._r.get_or_add_rPr(), font_name)
 
 
-def compose_image_split_pptx(
+def _add_image_split_slide(
+    prs: Presentation,
     *,
     image_size: tuple[int, int],
-    background_path: Path,
+    background_path: Path | None,
+    background_mode: str,
     text_layout: dict,
     object_layers: list[_ObjectLayer],
-    out_path: Path,
-    font_name: str = DEFAULT_FONT,
-) -> Path:
-    """깨끗한 배경 + alpha 객체 (z-order) + editable textbox 로 1-슬라이드 PPTX 생성."""
+    font_name: str,
+) -> None:
+    """기존 Presentation 에 1 슬라이드 추가. multi-slide 합성용."""
     px_w, _ = image_size
-    scale = SLIDE_W_EMU / px_w
-    effective_dpi = px_w / (SLIDE_W_EMU / EMU_PER_INCH)
-
-    prs = Presentation()
-    prs.slide_width = Emu(SLIDE_W_EMU)
-    prs.slide_height = Emu(SLIDE_H_EMU)
+    scale = prs.slide_width / px_w
+    effective_dpi = px_w / (prs.slide_width / EMU_PER_INCH)
     blank = prs.slide_layouts[6]
     slide = prs.slides.add_slide(blank)
 
-    slide.shapes.add_picture(
-        str(background_path), 0, 0,
-        width=Emu(SLIDE_W_EMU), height=Emu(SLIDE_H_EMU),
-    )
+    if background_mode == "clean" and background_path is not None:
+        # 시각 충실: clean 이미지 통째 깔기 (객체와 이중 합성)
+        slide.shapes.add_picture(
+            str(background_path), 0, 0,
+            width=prs.slide_width, height=prs.slide_height,
+        )
+    elif background_mode == "white":
+        # 흰 캔버스 (default — 깔끔, 객체 분리 명확)
+        from pptx.enum.shapes import MSO_SHAPE
+        bg = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, 0, 0, prs.slide_width, prs.slide_height,
+        )
+        bg.fill.solid()
+        bg.fill.fore_color.rgb = RGBColor(255, 255, 255)
+        bg.line.fill.background()
+    # 'transparent' 면 아무것도 안 깔음 (PowerPoint 기본 슬라이드 배경 유지)
+
+    # 면적 큰 순 (z 작은) 부터 → 뒤에 깔림. 작은 픽토그램이 위에.
     for ly in sorted(object_layers, key=lambda layer: layer.z):
         x, y, w, h = ly.bbox
         slide.shapes.add_picture(
@@ -589,8 +608,71 @@ def compose_image_split_pptx(
             Emu(int(x * scale)), Emu(int(y * scale)),
             width=Emu(int(w * scale)), height=Emu(int(h * scale)),
         )
+    # textbox 는 최상단
     for t in text_layout.get("texts", []):
         _add_textbox(slide, t, scale=scale, effective_dpi=effective_dpi, font_name=font_name)
+
+
+def compose_image_split_pptx(
+    *,
+    image_size: tuple[int, int],
+    background_path: Path | None,
+    text_layout: dict,
+    object_layers: list[_ObjectLayer],
+    out_path: Path,
+    font_name: str = DEFAULT_FONT,
+    background_mode: str = "white",
+) -> Path:
+    """단일 슬라이드 PPTX 생성 (compose_image_split_pptx_multi 의 single 버전)."""
+    prs = Presentation()
+    prs.slide_width = Emu(SLIDE_W_EMU)
+    prs.slide_height = Emu(SLIDE_H_EMU)
+    _add_image_split_slide(
+        prs,
+        image_size=image_size,
+        background_path=background_path,
+        background_mode=background_mode,
+        text_layout=text_layout,
+        object_layers=object_layers,
+        font_name=font_name,
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(str(out_path))
+    return out_path
+
+
+def compose_image_split_pptx_multi(
+    *,
+    slides_data: list[dict],
+    out_path: Path,
+    font_name: str = DEFAULT_FONT,
+    background_mode: str = "white",
+) -> Path:
+    """N개 슬라이드 image_split 결과를 한 PPTX 로 합성.
+
+    slides_data: [
+      {
+        'image_size': (w, h),
+        'background_path': Path,
+        'text_layout': dict,
+        'object_layers': list[_ObjectLayer],
+      },
+      ...
+    ]
+    """
+    prs = Presentation()
+    prs.slide_width = Emu(SLIDE_W_EMU)
+    prs.slide_height = Emu(SLIDE_H_EMU)
+    for sd in slides_data:
+        _add_image_split_slide(
+            prs,
+            image_size=sd["image_size"],
+            background_path=sd.get("background_path"),
+            background_mode=background_mode,
+            text_layout=sd["text_layout"],
+            object_layers=sd["object_layers"],
+            font_name=font_name,
+        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))
     return out_path
@@ -685,6 +767,7 @@ def convert_image_split(
         object_layers=layers,
         out_path=output_pptx,
         font_name=options.font_name,
+        background_mode=options.background_mode,
     )
     emit("완료", 100)
 
@@ -694,5 +777,113 @@ def convert_image_split(
         text_layout_json=text_json_path,
         clean_bg_png=clean_path,
         object_layers_json=layers_json,
+        elapsed_sec=round(time.perf_counter() - started, 1),
+    )
+
+
+def convert_image_split_multi(
+    *,
+    input_images: list[Path],
+    output_pptx: Path,
+    workdir: Path,
+    options: ImageSplitOptions,
+    progress: Callable[[str, float], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> ImageSplitResult:
+    """N장 이미지 → N-슬라이드 editable PPTX (각 슬라이드마다 image_split 적용).
+
+    workdir 아래에 슬라이드별 sub-dir:
+      workdir/slide_001/text_layout.json, 02_clean_bg.png, objects/, ...
+      workdir/slide_NNN/...
+
+    progress callback 은 전체 (0~100) 기준으로 emit. 슬라이드 1장당
+    pct_per_slide = 100 / N 만큼 진행.
+    """
+    def emit(msg: str, pct: float) -> None:
+        if progress is not None:
+            progress(msg, pct)
+
+    def check_cancel() -> None:
+        if cancel is not None and cancel():
+            from star_slide.pipeline.notebooklm_auto import JobCancelledError
+            raise JobCancelledError("convert_image_split_multi cancelled")
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    n = len(input_images)
+    if n == 0:
+        raise ValueError("input_images 가 비었습니다")
+    pct_per = 100.0 / n
+
+    slides_data: list[dict] = []
+    last_clean_bg: Path | None = None
+    last_text_json: Path | None = None
+    last_layers_json: Path | None = None
+
+    for i, img_path in enumerate(input_images, start=1):
+        slide_dir = workdir / f"slide_{i:03d}"
+        slide_dir.mkdir(parents=True, exist_ok=True)
+        base_pct = (i - 1) * pct_per
+
+        check_cancel()
+        emit(f"[{i}/{n}] Codex Vision 으로 텍스트 추출", base_pct)
+        text_json = slide_dir / "text_layout.json"
+        text_layout = analyze_text_with_codex(img_path, out_json=text_json)
+        check_cancel()
+        image = Image.open(img_path).convert("RGB")
+        target_size = image.size
+        text_layout = normalize_text_layout_to_image_size(text_layout, target_size)
+        if "_normalized_from" in text_layout:
+            text_json.write_text(
+                json.dumps(text_layout, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+
+        check_cancel()
+        clean_path = slide_dir / "02_clean_bg.png"
+        if options.text_erase_mode == "codex_imagegen":
+            emit(f"[{i}/{n}] Codex image_gen 으로 텍스트 제거 (~30-60s)", base_pct + pct_per * 0.25)
+            try:
+                remove_text_codex_imagegen(img_path, out_png=clean_path, target_size=target_size)
+            except Exception as exc:
+                emit(f"[{i}/{n}] image_gen 실패 → solid fallback: {exc}", base_pct + pct_per * 0.40)
+                remove_text_solid_fill(img_path, text_layout, out_png=clean_path)
+        else:
+            emit(f"[{i}/{n}] 주변색 fill 로 텍스트 제거", base_pct + pct_per * 0.25)
+            remove_text_solid_fill(img_path, text_layout, out_png=clean_path)
+
+        check_cancel()
+        emit(f"[{i}/{n}] SAM2 로 객체 추출", base_pct + pct_per * 0.65)
+        layers, layers_json = extract_objects_sam2_clean(
+            clean_path, out_dir=slide_dir, options=options,
+        )
+
+        slides_data.append({
+            "image_size": target_size,
+            "background_path": clean_path,
+            "text_layout": text_layout,
+            "object_layers": layers,
+        })
+        last_clean_bg = clean_path
+        last_text_json = text_json
+        last_layers_json = layers_json
+        emit(f"[{i}/{n}] 슬라이드 완료 ({len(text_layout.get('texts', []))} 텍스트, "
+             f"{len(layers)} 객체)", base_pct + pct_per)
+
+    check_cancel()
+    emit(f"PPTX 합성 ({n} 슬라이드)", 95)
+    compose_image_split_pptx_multi(
+        slides_data=slides_data,
+        out_path=output_pptx,
+        font_name=options.font_name,
+        background_mode=options.background_mode,
+    )
+    emit("완료", 100)
+
+    return ImageSplitResult(
+        output=output_pptx,
+        workdir=workdir,
+        text_layout_json=last_text_json or workdir,
+        clean_bg_png=last_clean_bg or workdir,
+        object_layers_json=last_layers_json or workdir,
         elapsed_sec=round(time.perf_counter() - started, 1),
     )

@@ -141,6 +141,7 @@ def create_app() -> FastAPI:
                 "watermarkMode": "off",
                 "reconstructionMode": "auto",
                 "textEraseMode": "codex_imagegen",
+                "backgroundMode": "white",
             },
         }
 
@@ -1051,6 +1052,7 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             watermark_mode=str(payload.get("watermarkMode") or "off"),
             reconstruction_mode=str(payload.get("reconstructionMode") or "auto"),
             text_erase_mode=str(payload.get("textEraseMode") or "codex_imagegen"),
+            background_mode=str(payload.get("backgroundMode") or "white"),
         )
         previews_dir = job_dir / "artifacts" / "previews"
 
@@ -2437,6 +2439,17 @@ INDEX_HTML = r"""<!doctype html>
             <option value="solid" data-i18n="options.eraseSolid">주변색 fill (빠름)</option>
           </select>
         </div>
+        <div>
+          <div class="label-row">
+            <label for="s_backgroundMode" data-i18n="options.backgroundMode">슬라이드 배경 (image_split)</label>
+            <span class="help" title="white: 흰 캔버스 위에 alpha 객체+textbox (default, 깔끔, 객체 분리 명확). transparent: 슬라이드 기본 배경. clean: Codex가 만든 텍스트 제거 이미지를 통째로 깔기 (시각 충실하지만 객체 이동 시 같은 모양 잔존)." data-i18n-title="help.backgroundMode">?</span>
+          </div>
+          <select id="s_backgroundMode">
+            <option value="white" data-i18n="options.bgWhite">white — 흰 캔버스 (깔끔)</option>
+            <option value="transparent" data-i18n="options.bgTransparent">transparent — 슬라이드 기본</option>
+            <option value="clean" data-i18n="options.bgClean">clean — 텍스트 제거 이미지 통째 (시각 충실)</option>
+          </select>
+        </div>
       </div>
 
       <div class="hint" style="margin-top:14px;" data-i18n-html="sidebar.sessionHint">
@@ -2599,6 +2612,17 @@ INDEX_HTML = r"""<!doctype html>
           <option value="solid" data-i18n="options.eraseSolid">주변색 fill (빠름)</option>
         </select>
       </div>
+      <div>
+        <div class="label-row">
+          <label for="backgroundMode" data-i18n="options.backgroundMode">슬라이드 배경 (image_split)</label>
+          <span class="help" title="white: 흰 캔버스 + 객체 + textbox (깔끔). transparent: 기본. clean: Codex 텍스트 제거 이미지 통째." data-i18n-title="help.backgroundMode">?</span>
+        </div>
+        <select id="backgroundMode">
+          <option value="white" data-i18n="options.bgWhite">white — 흰 캔버스</option>
+          <option value="transparent" data-i18n="options.bgTransparent">transparent</option>
+          <option value="clean" data-i18n="options.bgClean">clean — 통째</option>
+        </select>
+      </div>
     </div>
   </div>
 
@@ -2640,7 +2664,7 @@ INDEX_HTML = r"""<!doctype html>
       return _pptxPreviewModulePromise;
     }
 
-    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode","reconstructionMode","textEraseMode"];
+    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode","reconstructionMode","textEraseMode","backgroundMode"];
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
     const languageKey = "starSlideLanguage";
@@ -2698,8 +2722,13 @@ INDEX_HTML = r"""<!doctype html>
         "options.textEraseMode": "텍스트 제거 방식 (image_split)",
         "options.eraseCodex": "Codex image_gen (느림 60s, 고품질)",
         "options.eraseSolid": "주변색 fill (빠름 1s)",
-        "help.reconstructionMode": "단일 이미지 입력에서만 적용. image_split: Codex Vision 으로 텍스트+위치 추출 + Codex image_gen 으로 텍스트 지운 배경 + SAM2 로 객체 누끼 → editable PPTX 재조합. 슬라이드당 60-120초.",
+        "options.backgroundMode": "슬라이드 배경 (image_split)",
+        "options.bgWhite": "white — 흰 캔버스 (깔끔)",
+        "options.bgTransparent": "transparent — 슬라이드 기본",
+        "options.bgClean": "clean — 텍스트 제거 이미지 통째 (시각 충실)",
+        "help.reconstructionMode": "단일 이미지/deck 모두 적용. image_split: Codex Vision 으로 텍스트+위치 추출 → Codex image_gen 으로 텍스트 지운 배경 → SAM2 로 객체 누끼 → editable PPTX 재조합. 슬라이드당 60-120초.",
         "help.textEraseMode": "image_split 전용. codex_imagegen: 그라데이션/복잡한 배경에 우수 (~60s). solid: 단색/카드 배경에 빠르게 적합 (~1s).",
+        "help.backgroundMode": "image_split 전용. white: 흰 캔버스 위에 alpha 객체+textbox (default, 객체 분리 명확). transparent: PowerPoint 기본 슬라이드 배경. clean: Codex 텍스트 제거 이미지를 통째 깔기 (시각 100% 충실하지만 객체 이동 시 같은 모양 잔존).",
         "help.retries": "layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수입니다. 기본 2회이며, 네트워크/LLM 일시 실패를 흡수합니다.",
         "help.llmParallel": "여러 슬라이드의 LLM 분석 요청을 동시에 몇 개까지 실행할지 정합니다.",
         "help.fontScale": "PPTX로 다시 렌더링할 때 모든 편집 가능 텍스트 크기에 곱하는 값입니다.",
@@ -2867,8 +2896,13 @@ INDEX_HTML = r"""<!doctype html>
         "options.textEraseMode": "Text-erase mode (image_split)",
         "options.eraseCodex": "Codex image_gen (slow ~60s, high quality)",
         "options.eraseSolid": "Surrounding-color fill (fast ~1s)",
-        "help.reconstructionMode": "Single-image input only. image_split: Codex Vision extracts text+positions, Codex image_gen erases text into a clean background, SAM2 masks each object → editable PPTX. Takes ~60-120s per slide.",
+        "options.backgroundMode": "Slide background (image_split)",
+        "options.bgWhite": "white — clean canvas (default)",
+        "options.bgTransparent": "transparent — slide default",
+        "options.bgClean": "clean — text-erased image full backdrop (faithful)",
+        "help.reconstructionMode": "Single image or deck input. image_split: Codex Vision extracts text+positions, Codex image_gen erases text into a clean background, SAM2 masks each object → editable PPTX. Takes ~60-120s per slide.",
         "help.textEraseMode": "image_split only. codex_imagegen: best for gradients/complex backgrounds (~60s). solid: faster for flat/card backgrounds (~1s).",
+        "help.backgroundMode": "image_split only. white: white canvas + alpha objects + textbox (default, object separation is clearest). transparent: PowerPoint default slide background. clean: Codex's text-erased image as full backdrop (100%% visually faithful but moving an object leaves the same shape underneath).",
         "help.retries": "How many times to retry the same slide when layout JSON generation fails. Default is 2 to absorb transient network or LLM failures.",
         "help.llmParallel": "Maximum number of slide analysis requests to run in parallel.",
         "help.fontScale": "Multiplier applied to editable text sizes when rendering the PPTX.",
@@ -3312,6 +3346,7 @@ INDEX_HTML = r"""<!doctype html>
       watermarkMode: "s_watermarkMode",
       reconstructionMode: "s_reconstructionMode",
       textEraseMode: "s_textEraseMode",
+      backgroundMode: "s_backgroundMode",
     };
 
     function applySidebarOptions(merged) {
@@ -3525,6 +3560,7 @@ INDEX_HTML = r"""<!doctype html>
         watermarkMode: $("watermarkMode").value || "off",
         reconstructionMode: $("reconstructionMode").value || "auto",
         textEraseMode: $("textEraseMode").value || "codex_imagegen",
+        backgroundMode: $("backgroundMode").value || "white",
       };
     }
 
@@ -3759,6 +3795,7 @@ INDEX_HTML = r"""<!doctype html>
         watermarkMode: v("s_watermarkMode", "off") || "off",
         reconstructionMode: v("s_reconstructionMode", "auto") || "auto",
         textEraseMode: v("s_textEraseMode", "codex_imagegen") || "codex_imagegen",
+        backgroundMode: v("s_backgroundMode", "white") || "white",
       };
       if (includeProvider) data.provider = provider;
       return data;
