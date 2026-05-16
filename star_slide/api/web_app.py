@@ -1748,6 +1748,17 @@ INDEX_HTML = r"""<!doctype html>
     }
     button:disabled { opacity: .55; cursor: not-allowed; }
     .checkline { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; }
+    .image-split-group {
+      margin-top: 14px;
+      padding: 12px 12px 12px 16px;
+      border-left: 3px solid var(--blue);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--blue) 6%, var(--surface-2));
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .image-split-group.disabled { opacity: 0.45; pointer-events: none; border-left-color: var(--line); background: var(--surface-2); }
+    .image-split-header { font-size: 12px; font-weight: 600; color: var(--blue); margin-bottom: 4px; }
+    .image-split-group.disabled .image-split-header { color: var(--muted); }
     .jobs {
       display: grid;
       gap: 12px;
@@ -2410,7 +2421,6 @@ INDEX_HTML = r"""<!doctype html>
         <label class="checkline"><input id="s_sam3" type="checkbox" /> SAM3 bbox refinement</label>
         <label class="checkline"><input id="s_editableEmbeddedText" type="checkbox" /> <span data-i18n="options.editableEmbeddedText">큰 이미지 내부 텍스트 편집 가능 유지</span></label>
         <label class="checkline"><input id="s_keepIntermediates" type="checkbox" /> <span data-i18n="options.keepIntermediates">큰 중간 산출물 보존</span></label>
-        <label class="checkline"><input id="s_useNativeShapes" type="checkbox" /> <span data-i18n="options.useNativeShapes">image_split: PPT native shape 사용 (큰 박스/카드/화살표 직접 편집 가능)</span></label>
         <div>
           <div class="label-row">
             <label for="s_watermarkMode" data-i18n="options.watermarkMode">워터마크만 제거 모드</label>
@@ -2424,34 +2434,38 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div>
           <div class="label-row">
-            <label for="s_reconstructionMode" data-i18n="options.reconstructionMode">재구성 모드 (단일 이미지)</label>
-            <span class="help" title="단일 이미지 입력에서만 적용됩니다. image_split 모드는 Codex Vision 으로 텍스트 추출 + Codex image_gen 으로 텍스트 제거 + SAM2 로 객체 누끼 → editable PPTX 재조합. 결과 품질이 더 높지만 슬라이드당 60-120초 소요." data-i18n-title="help.reconstructionMode">?</span>
+            <label for="s_reconstructionMode" data-i18n="options.reconstructionMode">재구성 모드</label>
+            <span class="help" title="기본: vector + hybrid 자동 선택 (모든 입력). image_split: Codex Vision + image_gen + SAM2 누끼 (단일 이미지/deck, 슬라이드당 60-120초)." data-i18n-title="help.reconstructionMode">?</span>
           </div>
-          <select id="s_reconstructionMode">
+          <select id="s_reconstructionMode" onchange="toggleImageSplitOptions('s_')">
             <option value="auto" data-i18n="options.reconstructionAuto">기본 (vector + hybrid 자동 선택)</option>
-            <option value="image_split" data-i18n="options.reconstructionImageSplit">image_split — Codex + SAM2 누끼 (단일 이미지)</option>
+            <option value="image_split" data-i18n="options.reconstructionImageSplit">image_split — Codex + SAM2 누끼</option>
           </select>
         </div>
-        <div>
-          <div class="label-row">
-            <label for="s_textEraseMode" data-i18n="options.textEraseMode">텍스트 제거 방식 (image_split)</label>
-            <span class="help" title="image_split 모드에서만 사용. codex_imagegen: Codex CLI image_gen 으로 텍스트 제거 (~30-60초, 그라데이션 보존 우수). solid: 주변색 ring sample fill (~1초, 단색 배경 적합)." data-i18n-title="help.textEraseMode">?</span>
+        <div id="s_imageSplitGroup" class="image-split-group">
+          <div class="image-split-header" data-i18n="options.imageSplitGroup">↳ image_split 세부 옵션</div>
+          <div>
+            <div class="label-row">
+              <label for="s_textEraseMode" data-i18n="options.textEraseMode">텍스트 제거 방식</label>
+              <span class="help" title="codex_imagegen: Codex CLI image_gen 으로 텍스트 제거 (~30-60초, 그라데이션 보존). solid: 주변색 ring fill (~1초, 단색 배경)." data-i18n-title="help.textEraseMode">?</span>
+            </div>
+            <select id="s_textEraseMode">
+              <option value="codex_imagegen" data-i18n="options.eraseCodex">Codex image_gen (느림, 고품질)</option>
+              <option value="solid" data-i18n="options.eraseSolid">주변색 fill (빠름)</option>
+            </select>
           </div>
-          <select id="s_textEraseMode">
-            <option value="codex_imagegen" data-i18n="options.eraseCodex">Codex image_gen (느림, 고품질)</option>
-            <option value="solid" data-i18n="options.eraseSolid">주변색 fill (빠름)</option>
-          </select>
-        </div>
-        <div>
-          <div class="label-row">
-            <label for="s_backgroundMode" data-i18n="options.backgroundMode">슬라이드 배경 (image_split)</label>
-            <span class="help" title="white: 흰 캔버스 위에 alpha 객체+textbox (default, 깔끔, 객체 분리 명확). transparent: 슬라이드 기본 배경. clean: Codex가 만든 텍스트 제거 이미지를 통째로 깔기 (시각 충실하지만 객체 이동 시 같은 모양 잔존)." data-i18n-title="help.backgroundMode">?</span>
+          <div>
+            <div class="label-row">
+              <label for="s_backgroundMode" data-i18n="options.backgroundMode">슬라이드 배경</label>
+              <span class="help" title="white: 흰 캔버스 + alpha 객체 (default, 객체 분리 명확). transparent: 슬라이드 기본 배경. clean: Codex 텍스트 제거 이미지 통째 (시각 충실, 객체 이동 시 같은 모양 잔존)." data-i18n-title="help.backgroundMode">?</span>
+            </div>
+            <select id="s_backgroundMode">
+              <option value="white" data-i18n="options.bgWhite">white — 흰 캔버스 (깔끔)</option>
+              <option value="transparent" data-i18n="options.bgTransparent">transparent — 슬라이드 기본</option>
+              <option value="clean" data-i18n="options.bgClean">clean — 텍스트 제거 이미지 통째 (시각 충실)</option>
+            </select>
           </div>
-          <select id="s_backgroundMode">
-            <option value="white" data-i18n="options.bgWhite">white — 흰 캔버스 (깔끔)</option>
-            <option value="transparent" data-i18n="options.bgTransparent">transparent — 슬라이드 기본</option>
-            <option value="clean" data-i18n="options.bgClean">clean — 텍스트 제거 이미지 통째 (시각 충실)</option>
-          </select>
+          <label class="checkline"><input id="s_useNativeShapes" type="checkbox" /> <span data-i18n="options.useNativeShapes">PPT native shape 사용 (큰 박스/카드/화살표 직접 편집 가능)</span></label>
         </div>
       </div>
 
@@ -2584,7 +2598,6 @@ INDEX_HTML = r"""<!doctype html>
       <label class="checkline"><input id="sam3" type="checkbox" /> SAM3 bbox refinement</label>
       <label class="checkline"><input id="editableEmbeddedText" type="checkbox" /> <span data-i18n="options.editableEmbeddedText">큰 이미지 내부 텍스트 편집 가능 유지</span></label>
       <label class="checkline"><input id="keepIntermediates" type="checkbox" /> <span data-i18n="options.keepIntermediates">큰 중간 산출물 보존</span></label>
-      <label class="checkline"><input id="useNativeShapes" type="checkbox" /> <span data-i18n="options.useNativeShapes">image_split: PPT native shape 사용</span></label>
       <div>
         <div class="label-row">
           <label for="watermarkMode" data-i18n="options.watermarkMode">워터마크만 제거 모드</label>
@@ -2598,34 +2611,38 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div>
         <div class="label-row">
-          <label for="reconstructionMode" data-i18n="options.reconstructionMode">재구성 모드 (단일 이미지)</label>
-          <span class="help" title="단일 이미지 입력에서만 적용. image_split: Codex Vision + image_gen + SAM2 누끼." data-i18n-title="help.reconstructionMode">?</span>
+          <label for="reconstructionMode" data-i18n="options.reconstructionMode">재구성 모드</label>
+          <span class="help" title="기본: vector + hybrid 자동. image_split: Codex Vision + image_gen + SAM2 누끼." data-i18n-title="help.reconstructionMode">?</span>
         </div>
-        <select id="reconstructionMode">
+        <select id="reconstructionMode" onchange="toggleImageSplitOptions('')">
           <option value="auto" data-i18n="options.reconstructionAuto">기본 (vector + hybrid 자동 선택)</option>
           <option value="image_split" data-i18n="options.reconstructionImageSplit">image_split — Codex + SAM2 누끼</option>
         </select>
       </div>
-      <div>
-        <div class="label-row">
-          <label for="textEraseMode" data-i18n="options.textEraseMode">텍스트 제거 방식 (image_split)</label>
-          <span class="help" title="codex_imagegen: Codex CLI image_gen (느림 60s, 그라데이션 보존). solid: 주변색 fill (빠름 1s)." data-i18n-title="help.textEraseMode">?</span>
+      <div id="imageSplitGroup" class="image-split-group">
+        <div class="image-split-header" data-i18n="options.imageSplitGroup">↳ image_split 세부 옵션</div>
+        <div>
+          <div class="label-row">
+            <label for="textEraseMode" data-i18n="options.textEraseMode">텍스트 제거 방식</label>
+            <span class="help" title="codex_imagegen: Codex CLI image_gen (느림 60s, 그라데이션 보존). solid: 주변색 fill (빠름 1s)." data-i18n-title="help.textEraseMode">?</span>
+          </div>
+          <select id="textEraseMode">
+            <option value="codex_imagegen" data-i18n="options.eraseCodex">Codex image_gen (느림, 고품질)</option>
+            <option value="solid" data-i18n="options.eraseSolid">주변색 fill (빠름)</option>
+          </select>
         </div>
-        <select id="textEraseMode">
-          <option value="codex_imagegen" data-i18n="options.eraseCodex">Codex image_gen (느림, 고품질)</option>
-          <option value="solid" data-i18n="options.eraseSolid">주변색 fill (빠름)</option>
-        </select>
-      </div>
-      <div>
-        <div class="label-row">
-          <label for="backgroundMode" data-i18n="options.backgroundMode">슬라이드 배경 (image_split)</label>
-          <span class="help" title="white: 흰 캔버스 + 객체 + textbox (깔끔). transparent: 기본. clean: Codex 텍스트 제거 이미지 통째." data-i18n-title="help.backgroundMode">?</span>
+        <div>
+          <div class="label-row">
+            <label for="backgroundMode" data-i18n="options.backgroundMode">슬라이드 배경</label>
+            <span class="help" title="white: 흰 캔버스 + 객체 + textbox (깔끔). transparent: 기본. clean: Codex 텍스트 제거 이미지 통째." data-i18n-title="help.backgroundMode">?</span>
+          </div>
+          <select id="backgroundMode">
+            <option value="white" data-i18n="options.bgWhite">white — 흰 캔버스</option>
+            <option value="transparent" data-i18n="options.bgTransparent">transparent</option>
+            <option value="clean" data-i18n="options.bgClean">clean — 통째</option>
+          </select>
         </div>
-        <select id="backgroundMode">
-          <option value="white" data-i18n="options.bgWhite">white — 흰 캔버스</option>
-          <option value="transparent" data-i18n="options.bgTransparent">transparent</option>
-          <option value="clean" data-i18n="options.bgClean">clean — 통째</option>
-        </select>
+        <label class="checkline"><input id="useNativeShapes" type="checkbox" /> <span data-i18n="options.useNativeShapes">PPT native shape 사용 (큰 박스/카드/화살표 직접 편집 가능)</span></label>
       </div>
     </div>
   </div>
@@ -2730,7 +2747,8 @@ INDEX_HTML = r"""<!doctype html>
         "options.bgWhite": "white — 흰 캔버스 (깔끔)",
         "options.bgTransparent": "transparent — 슬라이드 기본",
         "options.bgClean": "clean — 텍스트 제거 이미지 통째 (시각 충실)",
-        "options.useNativeShapes": "image_split: PPT native shape 사용 (큰 박스/카드/화살표 직접 편집 가능)",
+        "options.useNativeShapes": "PPT native shape 사용 (큰 박스/카드/화살표 직접 편집 가능)",
+        "options.imageSplitGroup": "↳ image_split 세부 옵션 (재구성 모드가 image_split 일 때만 적용)",
         "help.reconstructionMode": "단일 이미지/deck 모두 적용. image_split: Codex Vision 으로 텍스트+위치 추출 → Codex image_gen 으로 텍스트 지운 배경 → SAM2 로 객체 누끼 → editable PPTX 재조합. 슬라이드당 60-120초.",
         "help.textEraseMode": "image_split 전용. codex_imagegen: 그라데이션/복잡한 배경에 우수 (~60s). solid: 단색/카드 배경에 빠르게 적합 (~1s).",
         "help.backgroundMode": "image_split 전용. white: 흰 캔버스 위에 alpha 객체+textbox (default, 객체 분리 명확). transparent: PowerPoint 기본 슬라이드 배경. clean: Codex 텍스트 제거 이미지를 통째 깔기 (시각 100% 충실하지만 객체 이동 시 같은 모양 잔존).",
@@ -2905,7 +2923,8 @@ INDEX_HTML = r"""<!doctype html>
         "options.bgWhite": "white — clean canvas (default)",
         "options.bgTransparent": "transparent — slide default",
         "options.bgClean": "clean — text-erased image full backdrop (faithful)",
-        "options.useNativeShapes": "image_split: use PPT native shapes (containers/cards/arrows are directly editable)",
+        "options.useNativeShapes": "Use PPT native shapes (containers/cards/arrows are directly editable)",
+        "options.imageSplitGroup": "↳ image_split sub-options (only applied when reconstruction mode is image_split)",
         "help.reconstructionMode": "Single image or deck input. image_split: Codex Vision extracts text+positions, Codex image_gen erases text into a clean background, SAM2 masks each object → editable PPTX. Takes ~60-120s per slide.",
         "help.textEraseMode": "image_split only. codex_imagegen: best for gradients/complex backgrounds (~60s). solid: faster for flat/card backgrounds (~1s).",
         "help.backgroundMode": "image_split only. white: white canvas + alpha objects + textbox (default, object separation is clearest). transparent: PowerPoint default slide background. clean: Codex's text-erased image as full backdrop (100%% visually faithful but moving an object leaves the same shape underneath).",
@@ -3363,7 +3382,23 @@ INDEX_HTML = r"""<!doctype html>
         if (el.type === "checkbox") el.checked = Boolean(merged[optKey]);
         else el.value = merged[optKey] ?? "";
       }
+      // 재구성 모드에 따라 image_split sub-옵션 그룹 enable/disable
+      toggleImageSplitOptions("s_");
     }
+
+    // 재구성 모드 = image_split 일 때만 image_split 세부 옵션 그룹 활성화.
+    // prefix='s_' 면 사이드바, '' 면 설정 모달.
+    window.toggleImageSplitOptions = function(prefix) {
+      const sel = document.getElementById(prefix + "reconstructionMode");
+      const grp = document.getElementById(prefix + "imageSplitGroup");
+      if (!sel || !grp) return;
+      const active = sel.value === "image_split";
+      grp.classList.toggle("disabled", !active);
+      // 자식 입력들도 disabled 속성 토글 (form submission 영향은 없지만 시각 + 키보드)
+      grp.querySelectorAll("select, input").forEach(el => {
+        el.disabled = !active;
+      });
+    };
 
     function renderSidebarProviderOptions(saved, selected) {
       const builtIns = builtInProviders().map(provider =>
@@ -3657,6 +3692,8 @@ INDEX_HTML = r"""<!doctype html>
         slot.appendChild(host);
         try { applyProvider(false); } catch (_) { /* noop */ }
       }
+      // 모달 안의 image_split 그룹 enable/disable 동기화
+      try { toggleImageSplitOptions(""); } catch (_) { /* noop */ }
       // 초기 탭: system
       switchSettingsTab("system");
       // 탭 클릭 핸들러
