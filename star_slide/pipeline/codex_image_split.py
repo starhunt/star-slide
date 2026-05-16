@@ -113,6 +113,17 @@ class ImageSplitOptions:
     으로 추가 (사용자가 PPT 에서 색/크기 직접 편집 가능). 픽토그램은 codex bbox 로
     alpha PNG crop. False 면 SAM2 만 사용 (이전 동작)."""
 
+    remove_notebooklm_watermark: bool = True
+    """입력 이미지 우측 하단의 NotebookLM 워터마크를 사전 제거 (배경색 fill).
+    image_split 의 첫 단계에서 적용 — codex 분석/image_gen 이 워터마크를
+    객체나 텍스트로 잘못 잡는 것을 방지. NotebookLM 외 입력에는 효과 없음
+    (배경색 fill 만이라 무해)."""
+
+    slide_parallel: int = 5
+    """multi-slide image_split 의 슬라이드 병렬 처리 동시 개수. 슬라이드 1장당
+    ~80-120s (codex Vision 2회 + image_gen 1회) 라 5-deck 이면 순차 ~600s →
+    parallel=5 로 ~120s 까지 단축 가능. NotebookLmAutoOptions.llm_parallel 매핑."""
+
     sam_resize: int = 1920
     """SAM2 입력 리사이즈 폭. 0=원본 사용 (정밀하지만 느림)"""
 
@@ -1209,20 +1220,29 @@ def convert_image_split_multi(
     n = len(input_images)
     if n == 0:
         raise ValueError("input_images 가 비었습니다")
-    pct_per = 100.0 / n
 
-    slides_data: list[dict] = []
-    last_clean_bg: Path | None = None
-    last_text_json: Path | None = None
-    last_layers_json: Path | None = None
+    # NotebookLM 워터마크 사전 제거 (default ON, image_split 모든 흐름의 첫 단계).
+    # 우측 하단 영역을 추정 배경색으로 덮는 best-effort 처리.
+    # codex 분석/image_gen 호출 전에 적용해 워터마크가 객체로 분류되거나
+    # text_layout 에 잡히는 것을 방지.
+    if options.remove_notebooklm_watermark:
+        emit("NotebookLM 워터마크 사전 제거", 1)
+        from star_slide.input.watermark_remover import remove_watermarks
+        remove_watermarks(list(input_images))
 
-    for i, img_path in enumerate(input_images, start=1):
+    # 슬라이드 단위 작업을 worker 함수로 분리 — ThreadPoolExecutor 병렬 실행.
+    # 각 슬라이드는 독립적 (workdir/slide_NNN/ 격리, 다른 슬라이드 결과 의존 X).
+    # codex 호출은 IO-bound (subprocess + HTTP) 라 GIL 이슈 없음.
+    import threading
+    progress_lock = threading.Lock()
+    completed_count = [0]  # mutable counter for thread-safe increment
+
+    def process_slide(i: int, img_path: Path) -> dict:
         slide_dir = workdir / f"slide_{i:03d}"
         slide_dir.mkdir(parents=True, exist_ok=True)
-        base_pct = (i - 1) * pct_per
-
         check_cancel()
-        emit(f"[{i}/{n}] Codex Vision 으로 텍스트 추출", base_pct)
+
+        # Step 1: 텍스트 추출
         text_json = slide_dir / "text_layout.json"
         text_layout = analyze_text_with_codex(img_path, out_json=text_json)
         check_cancel()
@@ -1235,43 +1255,37 @@ def convert_image_split_multi(
             )
 
         check_cancel()
+        # Step 2: 텍스트 제거 배경
         clean_path = slide_dir / "02_clean_bg.png"
         if options.text_erase_mode == "codex_imagegen":
-            emit(f"[{i}/{n}] Codex image_gen 으로 텍스트 제거 (~30-60s)", base_pct + pct_per * 0.25)
             try:
                 remove_text_codex_imagegen(img_path, out_png=clean_path, target_size=target_size)
             except Exception as exc:
-                emit(f"[{i}/{n}] image_gen 실패 → solid fallback: {exc}", base_pct + pct_per * 0.40)
+                with progress_lock:
+                    emit(f"[slide {i}] image_gen 실패 → solid fallback: {exc}", -1)
                 remove_text_solid_fill(img_path, text_layout, out_png=clean_path)
         else:
-            emit(f"[{i}/{n}] 주변색 fill 로 텍스트 제거", base_pct + pct_per * 0.25)
             remove_text_solid_fill(img_path, text_layout, out_png=clean_path)
 
+        # Step 3: 객체 추출
         shapes_layout: dict | None = None
-        layers_json: Path | None = None
-
+        layers_json_path: Path | None = None
         if options.use_native_shapes:
             check_cancel()
-            emit(f"[{i}/{n}] Codex Vision 으로 도형/픽토그램 분석", base_pct + pct_per * 0.60)
             shapes_json_path = slide_dir / "shapes_layout.json"
             try:
-                shapes_layout = analyze_shapes_with_codex(
-                    clean_path, out_json=shapes_json_path,
-                )
+                shapes_layout = analyze_shapes_with_codex(clean_path, out_json=shapes_json_path)
                 shapes_layout = normalize_shapes_to_image_size(shapes_layout, target_size)
                 if "_normalized_from" in shapes_layout:
                     shapes_json_path.write_text(
                         json.dumps(shapes_layout, ensure_ascii=False, indent=2),
                         encoding="utf-8",
                     )
-                # 픽토그램은 codex bbox 에서 직접 alpha crop (SAM2 보다 정확)
-                emit(f"[{i}/{n}] 픽토그램 alpha crop", base_pct + pct_per * 0.85)
                 layers = crop_pictograms_from_codex_shapes(
                     clean_path, shapes_layout, out_dir=slide_dir / "objects",
                 )
-                # layers_json 도 저장 (디버깅용)
-                layers_json = slide_dir / "object_layers.json"
-                layers_json.write_text(json.dumps({
+                layers_json_path = slide_dir / "object_layers.json"
+                layers_json_path.write_text(json.dumps({
                     "image_size": list(target_size),
                     "layer_count": len(layers),
                     "source": "codex_pictogram_bbox",
@@ -1282,32 +1296,74 @@ def convert_image_split_multi(
                     ],
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception as exc:
-                emit(f"[{i}/{n}] codex shape 분석 실패 → SAM2 fallback: {exc}",
-                     base_pct + pct_per * 0.65)
-                layers, layers_json = extract_objects_sam2_clean(
+                with progress_lock:
+                    emit(f"[slide {i}] codex shape 분석 실패 → SAM2 fallback: {exc}", -1)
+                layers, layers_json_path = extract_objects_sam2_clean(
                     clean_path, out_dir=slide_dir, options=options,
                 )
                 shapes_layout = None
         else:
             check_cancel()
-            emit(f"[{i}/{n}] SAM2 로 객체 추출", base_pct + pct_per * 0.65)
-            layers, layers_json = extract_objects_sam2_clean(
+            layers, layers_json_path = extract_objects_sam2_clean(
                 clean_path, out_dir=slide_dir, options=options,
             )
 
-        slides_data.append({
+        # 진행률 thread-safe 업데이트
+        with progress_lock:
+            completed_count[0] += 1
+            done_pct = 5 + 88 * completed_count[0] / n  # 5%~93% 범위로 매핑
+            n_shapes = len(shapes_layout.get("shapes", [])) if shapes_layout else 0
+            emit(
+                f"[{completed_count[0]}/{n}] 완료 ({len(text_layout.get('texts', []))} 텍스트, "
+                f"{n_shapes} shape, {len(layers)} 픽토그램)",
+                done_pct,
+            )
+
+        return {
+            "_index": i,
             "image_size": target_size,
             "background_path": clean_path,
             "text_layout": text_layout,
             "object_layers": layers,
             "shapes_layout": shapes_layout,
+            "_text_json": text_json,
+            "_layers_json": layers_json_path,
+        }
+
+    # 병렬 실행
+    parallel = max(1, min(int(options.slide_parallel), n))
+    emit(f"image_split 슬라이드 {n}장 병렬 처리 시작 (parallel={parallel})", 5)
+    results: list[dict] = []
+    if parallel == 1 or n == 1:
+        for i, img_path in enumerate(input_images, start=1):
+            results.append(process_slide(i, img_path))
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=parallel) as executor:
+            futures = {
+                executor.submit(process_slide, i, img_path): i
+                for i, img_path in enumerate(input_images, start=1)
+            }
+            for fut in as_completed(futures):
+                results.append(fut.result())  # 예외 발생 시 raise
+
+    # 슬라이드 순서대로 정렬 (병렬 완료 순서가 다를 수 있음)
+    results.sort(key=lambda r: r["_index"])
+    slides_data: list[dict] = []
+    last_clean_bg: Path | None = None
+    last_text_json: Path | None = None
+    last_layers_json: Path | None = None
+    for r in results:
+        slides_data.append({
+            "image_size": r["image_size"],
+            "background_path": r["background_path"],
+            "text_layout": r["text_layout"],
+            "object_layers": r["object_layers"],
+            "shapes_layout": r["shapes_layout"],
         })
-        last_clean_bg = clean_path
-        last_text_json = text_json
-        last_layers_json = layers_json
-        n_shapes = len(shapes_layout.get("shapes", [])) if shapes_layout else 0
-        emit(f"[{i}/{n}] 슬라이드 완료 ({len(text_layout.get('texts', []))} 텍스트, "
-             f"{n_shapes} shape, {len(layers)} 픽토그램)", base_pct + pct_per)
+        last_clean_bg = r["background_path"]
+        last_text_json = r["_text_json"]
+        last_layers_json = r["_layers_json"]
 
     check_cancel()
     emit(f"PPTX 합성 ({n} 슬라이드)", 95)

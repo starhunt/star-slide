@@ -65,6 +65,8 @@ class NotebookLmAutoOptions:
     #           픽토그램 bbox alpha crop. 진짜 편집 가능한 layered 객체. (default)
     #   False — SAM2 auto-mask 로 alpha PNG 만 (이전 동작)
     use_native_shapes: bool = True
+    # image_split 의 입력 이미지에서 우측 하단 NotebookLM 워터마크 자동 제거 (default ON).
+    remove_notebooklm_watermark: bool = True
 
 
 @dataclass(frozen=True)
@@ -595,6 +597,8 @@ def _convert_image_split(
         text_erase_mode=options.text_erase_mode,
         background_mode=options.background_mode,
         use_native_shapes=options.use_native_shapes,
+        remove_notebooklm_watermark=options.remove_notebooklm_watermark,
+        slide_parallel=max(1, int(options.llm_parallel)),
     )
     split_workdir = workdir / "image_split"
     result = convert_image_split_multi(
