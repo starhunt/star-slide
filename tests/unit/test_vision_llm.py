@@ -51,11 +51,7 @@ def test_parse_markdown_fenced_json() -> None:
 
 
 def test_parse_with_leading_prose_extracts_braces() -> None:
-    raw = (
-        "Sure, here is the JSON:\n"
-        '{"image_size":[100,100],"elements":[]}\n'
-        "Hope this helps."
-    )
+    raw = 'Sure, here is the JSON:\n{"image_size":[100,100],"elements":[]}\nHope this helps.'
     slide = VisionExtractor._parse_json(raw)
     assert slide.image_size == (100, 100)
     assert slide.elements == []

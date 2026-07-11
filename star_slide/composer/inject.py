@@ -9,7 +9,7 @@ a:path[w, h] 좌표계가 셰이프 사이즈에 맞게 스케일된다.
 
 from __future__ import annotations
 
-from lxml import etree  # type: ignore[import-untyped]
+from lxml import etree
 from pptx.shapes.autoshape import Shape
 
 NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"

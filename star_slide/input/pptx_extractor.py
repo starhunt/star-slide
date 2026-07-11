@@ -100,7 +100,9 @@ def extract_pdf_pages(path: Path, out_dir: Path, dpi: int = 192) -> list[Path]:
     try:
         pages = convert_from_path(str(path), dpi=dpi)
     except PDFInfoNotInstalledError as exc:  # pragma: no cover - depends on host tools
-        raise RuntimeError("PDF 입력에는 poppler 설치가 필요합니다. macOS에서는 `brew install poppler`를 실행하세요.") from exc
+        raise RuntimeError(
+            "PDF 입력에는 poppler 설치가 필요합니다. macOS에서는 `brew install poppler`를 실행하세요."
+        ) from exc
     except PDFPageCountError as exc:  # pragma: no cover - depends on input file
         raise RuntimeError(f"PDF 페이지 수를 읽을 수 없습니다: {path}") from exc
     extracted: list[Path] = []

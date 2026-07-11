@@ -69,7 +69,9 @@ def is_no_color(value: Any) -> bool:
 
 
 class LayoutRenderer:
-    def __init__(self, layout: dict[str, Any], image_path: Path, workdir: Path, *, font_scale: float = 1.0):
+    def __init__(
+        self, layout: dict[str, Any], image_path: Path, workdir: Path, *, font_scale: float = 1.0
+    ):
         self.layout = layout
         self.image_path = image_path
         self.workdir = workdir
@@ -292,7 +294,9 @@ class LayoutRenderer:
         slide.shapes.add_picture(str(path), *self.box_to_emu(obj["bbox"]))
 
 
-def build_deck(layouts: list[dict[str, Any]], image_root: Path, out_path: Path, *, font_scale: float = 1.0) -> None:
+def build_deck(
+    layouts: list[dict[str, Any]], image_root: Path, out_path: Path, *, font_scale: float = 1.0
+) -> None:
     if not layouts:
         raise ValueError("no layouts")
 

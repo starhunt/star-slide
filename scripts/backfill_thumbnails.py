@@ -7,14 +7,15 @@
 실행:
     uv run --extra api python scripts/backfill_thumbnails.py
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
 from star_slide.api.web_app import (
-    JobState,
     WEB_ROOT,
+    JobState,
     render_pptx_pages,
 )
 

@@ -50,7 +50,7 @@ def save_mask_crop(
     # For PPTX image-object extraction, filled interiors are preferable.
     crop_mask = ndimage.binary_closing(crop_mask, structure=np.ones((3, 3)), iterations=1)
     crop_mask = ndimage.binary_fill_holes(crop_mask)
-    alpha = (crop_mask.astype(np.uint8) * 255)
+    alpha = crop_mask.astype(np.uint8) * 255
     crop.putalpha(Image.fromarray(alpha, mode="L"))
     crop.save(out_path)
 

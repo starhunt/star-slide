@@ -54,9 +54,7 @@ def _isolate_mask(
     return Image.fromarray(arr, mode="RGB")
 
 
-def _dominant_color_in_mask(
-    image: Image.Image, mask: NDArray[np.bool_]
-) -> str:
+def _dominant_color_in_mask(image: Image.Image, mask: NDArray[np.bool_]) -> str:
     """mask 영역 픽셀들의 최빈색을 hex로 반환."""
     arr = np.asarray(image.convert("RGB"))
     h_img, w_img = arr.shape[:2]
@@ -128,9 +126,7 @@ def vectorize_shape(
         return None
 
     try:
-        cust: CustGeomResult = svg_path_to_custgeom(
-            chosen.d, target_w=target_w, target_h=target_h
-        )
+        cust: CustGeomResult = svg_path_to_custgeom(chosen.d, target_w=target_w, target_h=target_h)
     except (ValueError, NotImplementedError):
         return None
 

@@ -182,14 +182,10 @@ def trace_image(
                 timeout=60,
             )
         except FileNotFoundError as exc:
-            raise VtracerNotFoundError(
-                f"vtracer 바이너리를 찾을 수 없음: {bin_path}"
-            ) from exc
+            raise VtracerNotFoundError(f"vtracer 바이너리를 찾을 수 없음: {bin_path}") from exc
 
         if proc.returncode != 0:
-            raise VtracerError(
-                f"vtracer 실패 (code={proc.returncode}): {proc.stderr.strip()}"
-            )
+            raise VtracerError(f"vtracer 실패 (code={proc.returncode}): {proc.stderr.strip()}")
 
         return _parse_svg(out_path)
     finally:

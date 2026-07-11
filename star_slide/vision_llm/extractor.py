@@ -157,9 +157,7 @@ class VisionExtractor:
 
         self._server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
         self._server_port = port
-        self._server_thread = threading.Thread(
-            target=self._server.serve_forever, daemon=True
-        )
+        self._server_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._server_thread.start()
 
     def stop_server(self) -> None:
@@ -218,9 +216,7 @@ class VisionExtractor:
             err_body = ""
             with contextlib.suppress(Exception):
                 err_body = exc.read().decode()[:500]
-            raise VisionExtractError(
-                f"vision API HTTP {exc.code}: {err_body}"
-            ) from exc
+            raise VisionExtractError(f"vision API HTTP {exc.code}: {err_body}") from exc
         except Exception as exc:  # network 등
             raise VisionExtractError(f"vision API 호출 실패: {exc}") from exc
 

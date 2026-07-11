@@ -78,7 +78,10 @@ def main() -> int:
         with urllib.request.urlopen(req, timeout=args.timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        print(f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:1200]}", file=sys.stderr)
+        print(
+            f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:1200]}",
+            file=sys.stderr,
+        )
         return 1
     except urllib.error.URLError as exc:
         print(f"URLERROR: {exc.reason}", file=sys.stderr)

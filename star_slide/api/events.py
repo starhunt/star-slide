@@ -24,7 +24,9 @@ class EventBus:
 
     def __init__(self, *, history: int = 50) -> None:
         self._history: deque[dict[str, Any]] = deque(maxlen=history)
-        self._subscribers: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[dict[str, Any] | None]]] = set()
+        self._subscribers: set[
+            tuple[asyncio.AbstractEventLoop, asyncio.Queue[dict[str, Any] | None]]
+        ] = set()
         self._lock = Lock()
         self._closed = False
 
@@ -51,7 +53,9 @@ class EventBus:
             queue.put_nowait(latest)
         return queue
 
-    def unsubscribe(self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue[dict[str, Any] | None]) -> None:
+    def unsubscribe(
+        self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue[dict[str, Any] | None]
+    ) -> None:
         with self._lock:
             self._subscribers.discard((loop, queue))
 

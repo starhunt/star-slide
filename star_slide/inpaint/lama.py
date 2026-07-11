@@ -55,9 +55,7 @@ def _bboxes_to_mask(
             mask[y1:y2, x1:x2] = 255
 
     if dilate_kernel > 0:
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (dilate_kernel, dilate_kernel)
-        )
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_kernel, dilate_kernel))
         mask = cv2.dilate(mask, kernel, iterations=1).astype(np.uint8)
 
     return Image.fromarray(mask, mode="L")
@@ -84,9 +82,7 @@ def _segmentations_to_mask(
         union[seg] = 255
 
     if dilate_kernel > 0:
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (dilate_kernel, dilate_kernel)
-        )
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_kernel, dilate_kernel))
         union = cv2.dilate(union, kernel, iterations=1).astype(np.uint8)
 
     return Image.fromarray(union, mode="L")

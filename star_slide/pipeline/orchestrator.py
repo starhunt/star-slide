@@ -216,7 +216,6 @@ def convert(
         slide_h_emu = 6_858_000
         slide_w_emu = round(slide_h_emu * im_w / max(1, im_h))
         png_paths = [slide_png]
-        infos = [object()]
 
     png_paths = _prepare_analysis_renders(
         png_paths,
@@ -243,7 +242,7 @@ def convert(
         )
         vision_extractor.start_server(render_dir)
 
-    for idx, (_info, png_path) in enumerate(zip(infos, png_paths, strict=False), start=1):
+    for idx, png_path in enumerate(png_paths, start=1):
         try:
             with Image.open(png_path) as im:
                 im_w, im_h = im.size
@@ -302,9 +301,7 @@ def convert(
 
         accepted_lines = [ln for ln in ocr_lines if ln.confidence >= options.ocr_min_confidence]
         # 인페인팅용은 더 관대한 임계 (작은 영문 라벨까지 지움)
-        mask_lines = [
-            ln for ln in ocr_lines if ln.confidence >= options.inpaint_min_confidence
-        ]
+        mask_lines = [ln for ln in ocr_lines if ln.confidence >= options.inpaint_min_confidence]
 
         sam3_element_result: Sam3Result | None = None
         if options.use_sam3_elements:
@@ -362,9 +359,7 @@ def convert(
         # SAM 3 text-prompt 'text' — OCR 미검출 텍스트 영역 보충 (인페인팅에만 사용)
         if options.use_sam3_text_masks and options.sam3_supplement_text_prompt:
             if sam3_element_result is not None:
-                sam3_text_masks = [
-                    sm for sm in sam3_element_result.masks if sm.concept == "text"
-                ]
+                sam3_text_masks = [sm for sm in sam3_element_result.masks if sm.concept == "text"]
                 sam3_text_result = Sam3Result(
                     image_size=sam3_element_result.image_size,
                     masks=sam3_text_masks,
@@ -439,9 +434,7 @@ def convert(
             mask_h_px = bbox_px[3]
             if options.extract_text_attributes:
                 mi: int | None = accepted_to_mask_idx.get(k)
-                seg: np.ndarray | None = (
-                    sam3_mask_by_box.get(mi) if mi is not None else None
-                )
+                seg: np.ndarray | None = sam3_mask_by_box.get(mi) if mi is not None else None
                 if seg is not None:
                     if slide_pil_for_attr is None:
                         slide_pil_for_attr = Image.open(png_path).convert("RGB")
@@ -509,18 +502,13 @@ def convert(
                     continue
 
                 vec: VectorizedShape | None = None
-                if (
-                    options.vectorize_shapes
-                    and shape_min_px <= cm.mask.area <= shape_max_px
-                ):
+                if options.vectorize_shapes and shape_min_px <= cm.mask.area <= shape_max_px:
                     if slide_pil_for_vec is None:
                         slide_pil_for_vec = Image.open(png_path).convert("RGB")
                     try:
                         vec = vectorize_shape(slide_pil_for_vec, cm.mask.segmentation)
                     except Exception as exc:
-                        qa_warnings.append(
-                            f"slide {idx} shape {j} vectorize 실패: {exc}"
-                        )
+                        qa_warnings.append(f"slide {idx} shape {j} vectorize 실패: {exc}")
                         vec = None
 
                 bbox_px = vec.bbox if vec is not None else cm.mask.bbox
@@ -593,13 +581,13 @@ def _prepare_analysis_renders(
     for src in png_paths:
         try:
             with Image.open(src) as im:
-                im = im.convert("RGB")
-                if im.width <= max_width_px:
+                rgb = im.convert("RGB")
+                if rgb.width <= max_width_px:
                     normalized.append(src)
                     continue
-                scale = max_width_px / im.width
-                new_size = (max_width_px, max(1, round(im.height * scale)))
-                resized = im.resize(new_size, Image.Resampling.LANCZOS)
+                scale = max_width_px / rgb.width
+                new_size = (max_width_px, max(1, round(rgb.height * scale)))
+                resized = rgb.resize(new_size, Image.Resampling.LANCZOS)
                 dst = out_dir / src.name
                 resized.save(dst)
                 normalized.append(dst)
@@ -635,10 +623,7 @@ def _is_text_like_sam3_mask(
 ) -> bool:
     if mask.concept == "text":
         return True
-    return any(
-        _bbox_overlap_ratio(mask.bbox, line.bbox) >= overlap_threshold
-        for line in ocr_lines
-    )
+    return any(_bbox_overlap_ratio(mask.bbox, line.bbox) >= overlap_threshold for line in ocr_lines)
 
 
 def _dedupe_sam3_masks(
@@ -924,11 +909,7 @@ def _compose_pptx(
 
         # 도형 (SHAPE) — preset geom (vision) 또는 vtracer custGeom (SAM 2.1)
         for obj in slide_data.objects:
-            if (
-                obj.type != ObjectType.SHAPE
-                or obj.shape is None
-                or obj.bbox_emu is None
-            ):
+            if obj.type != ObjectType.SHAPE or obj.shape is None or obj.bbox_emu is None:
                 continue
             x, y, w, h = obj.bbox_emu
             if w <= 0 or h <= 0:
@@ -939,18 +920,14 @@ def _compose_pptx(
                 preset = _preset_for_subtype(obj.shape.preset_name or obj.subtype)
                 sh = slide.shapes.add_shape(preset, Emu(x), Emu(y), Emu(w), Emu(h))
             elif geom == "custGeom" and obj.shape.custgeom_xml:
-                sh = slide.shapes.add_shape(
-                    MSO_SHAPE.RECTANGLE, Emu(x), Emu(y), Emu(w), Emu(h)
-                )
+                sh = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Emu(x), Emu(y), Emu(w), Emu(h))
                 try:
                     replace_geometry_with_custgeom(sh, obj.shape.custgeom_xml)
                 except Exception:
                     continue
             elif geom == "path":
                 # vision LLM이 path로 표시 (게이지 등) — 일단 OVAL placeholder
-                sh = slide.shapes.add_shape(
-                    MSO_SHAPE.OVAL, Emu(x), Emu(y), Emu(w), Emu(h)
-                )
+                sh = slide.shapes.add_shape(MSO_SHAPE.OVAL, Emu(x), Emu(y), Emu(w), Emu(h))
             else:
                 continue
 
@@ -958,14 +935,14 @@ def _compose_pptx(
                 with contextlib.suppress(Exception):
                     rgb = obj.shape.fill.lstrip("#")
                     sh.fill.solid()
-                    sh.fill.fore_color.rgb = RGBColor.from_string(rgb)  # type: ignore[no-untyped-call]
+                    sh.fill.fore_color.rgb = RGBColor.from_string(rgb)
             else:
                 with contextlib.suppress(Exception):
                     sh.fill.background()
             if obj.shape.stroke:
                 with contextlib.suppress(Exception):
                     rgb = obj.shape.stroke.lstrip("#")
-                    sh.line.color.rgb = RGBColor.from_string(rgb)  # type: ignore[no-untyped-call]
+                    sh.line.color.rgb = RGBColor.from_string(rgb)
                     if obj.shape.stroke_width_pt > 0:
                         sh.line.width = Pt(obj.shape.stroke_width_pt)
             else:
@@ -980,9 +957,7 @@ def _compose_pptx(
             if crop_path is None or not Path(crop_path).exists():
                 continue
             x, y, w, h = obj.bbox_emu
-            slide.shapes.add_picture(
-                str(crop_path), Emu(x), Emu(y), width=Emu(w), height=Emu(h)
-            )
+            slide.shapes.add_picture(str(crop_path), Emu(x), Emu(y), width=Emu(w), height=Emu(h))
 
         # 텍스트 객체
         for obj in slide_data.objects:
@@ -1005,7 +980,7 @@ def _compose_pptx(
             if obj.text.color and obj.text.color != "#000000":
                 with contextlib.suppress(Exception):
                     rgb = obj.text.color.lstrip("#")
-                    run.font.color.rgb = RGBColor.from_string(rgb)  # type: ignore[no-untyped-call]
+                    run.font.color.rgb = RGBColor.from_string(rgb)
             if obj.rotation:
                 with contextlib.suppress(Exception):
                     tb.rotation = float(obj.rotation)
@@ -1082,9 +1057,7 @@ def _inpaint_slide(
             padding=options.inpaint_padding_px,
             dilate_kernel=options.inpaint_dilate_px,
         )
-        inpaint_arr = np.maximum(
-            inpaint_arr, np.asarray(ocr_rect.convert("L"), dtype=np.uint8)
-        )
+        inpaint_arr = np.maximum(inpaint_arr, np.asarray(ocr_rect.convert("L"), dtype=np.uint8))
 
     # (b) SAM 3 box-prompt 정밀 마스크 추가 union
     if sam3_box_result is not None and options.use_sam3_text_masks:

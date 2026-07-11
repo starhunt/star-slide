@@ -93,7 +93,9 @@ def process_image(args: argparse.Namespace, image: Path) -> tuple[Path, str]:
             run(layout_cmd(args, image, output, attempt))
             return output, ""
         except subprocess.CalledProcessError as exc:
-            last_error = f"Command {redact_cmd(exc.cmd)!r} returned non-zero exit status {exc.returncode}."
+            last_error = (
+                f"Command {redact_cmd(exc.cmd)!r} returned non-zero exit status {exc.returncode}."
+            )
             if attempt < args.retries:
                 print(f"retrying {image} after failure ({attempt + 1}/{args.retries})", flush=True)
     output.unlink(missing_ok=True)
@@ -101,7 +103,9 @@ def process_image(args: argparse.Namespace, image: Path) -> tuple[Path, str]:
     return output, last_error
 
 
-def write_fallback_layout(image: Path, output: Path, *, reason: str = "layout_generation_failed") -> None:
+def write_fallback_layout(
+    image: Path, output: Path, *, reason: str = "layout_generation_failed"
+) -> None:
     with Image.open(image) as im:
         width, height = im.size
     layout = {
@@ -150,7 +154,9 @@ def main() -> int:
 
     if failures:
         failure_path = args.out_dir / "failures.json"
-        failure_path.write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
+        failure_path.write_text(
+            json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         print(f"failures: {failure_path}", flush=True)
 
     wrote_fallbacks = False
