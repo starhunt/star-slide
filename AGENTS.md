@@ -60,7 +60,7 @@ CLI flags take precedence; otherwise these are picked up automatically:
 | `STAR_SLIDE_BASE_URL` | OpenAI-compatible endpoint base | `http://localhost:8300/v1` |
 | `STAR_SLIDE_MODEL` | LLM model name | `gpt-5.5` |
 | `STAR_SLIDE_TIMEOUT` | Per-call timeout in seconds | `600` |
-| `STAR_SLIDE_RETRIES` | Retry count for malformed JSON | `1` |
+| `STAR_SLIDE_RETRIES` | Retry count for malformed JSON | `2` |
 | `STAR_SLIDE_LLM_PARALLEL` | Concurrent LLM calls | `5` |
 | `STAR_SLIDE_SAM3` | `1`/`true` to enable SAM3 bbox refinement | `0` |
 

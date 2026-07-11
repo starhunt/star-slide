@@ -167,8 +167,10 @@ uv run star-slide notebooklm run input.pptx -o out.pptx --quiet --json
 - `--json`: print the result metadata as a single-line JSON object to stdout
 - exit code: `0` on success, `1` on failure
 
-Supported environment variables: `STAR_SLIDE_API_KEY` (alias
-`VISION_PROXY_API_KEY`), `STAR_SLIDE_BASE_URL`, `STAR_SLIDE_MODEL`,
+Supported environment variables: `STAR_SLIDE_API_KEY` (aliases
+`VISION_PROXY_API_KEY`, `STAR_SLIDE_VISION_API_KEY`), `STAR_SLIDE_BASE_URL`
+(alias `STAR_SLIDE_VISION_BASE_URL`), `STAR_SLIDE_MODEL` (alias
+`STAR_SLIDE_VISION_MODEL`),
 `STAR_SLIDE_TIMEOUT`, `STAR_SLIDE_RETRIES`, `STAR_SLIDE_LLM_PARALLEL`,
 `STAR_SLIDE_SAM3`.
 
@@ -243,6 +245,8 @@ uv run star-slide notebooklm run INPUT.pdf -o OUTPUT.pptx [options]
 | `--retries` | `2` | Retry count for broken JSON, missing layouts, or transient LLM failures |
 | `--llm-parallel` | `5` | Parallel LLM calls for layout/raster-group analysis |
 | `--layout-failure-mode` | `image_fallback` | Use a full-slide image fallback after exhausted retries, or set `fail` to stop the job |
+| `--reconstruction-mode` | `auto` | Select `auto`, `hierarchical_overlay`, or `image_split` reconstruction |
+| `--child-object-max-area-ratio` | `0.25` | Maximum slide-area ratio of child objects peeled out of parent rasters in `hierarchical_overlay` mode |
 | `--sam3 / --no-sam3` | `--no-sam3` | Use SAM3 bbox refinement (off by default — opt-in quality mode) |
 | `--hybrid-allowed-delta` | `0.0` | Allow hybrid even if its diff is worse than vector by this amount |
 | `--editable-embedded-text / --rasterize-embedded-text` | `--editable-embedded-text` | Keep text inside large image groups editable when possible |

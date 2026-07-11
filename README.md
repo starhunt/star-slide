@@ -166,8 +166,9 @@ uv run star-slide notebooklm run input.pptx -o out.pptx --quiet --json
 - `--json`: 완료 시 결과 메타데이터를 stdout에 한 줄 JSON으로 출력
 - exit code: 성공 `0`, 실패 `1`
 
-지원 환경변수: `STAR_SLIDE_API_KEY` (alias `VISION_PROXY_API_KEY`),
-`STAR_SLIDE_BASE_URL`, `STAR_SLIDE_MODEL`, `STAR_SLIDE_TIMEOUT`,
+지원 환경변수: `STAR_SLIDE_API_KEY` (aliases `VISION_PROXY_API_KEY`, `STAR_SLIDE_VISION_API_KEY`),
+`STAR_SLIDE_BASE_URL` (alias `STAR_SLIDE_VISION_BASE_URL`),
+`STAR_SLIDE_MODEL` (alias `STAR_SLIDE_VISION_MODEL`), `STAR_SLIDE_TIMEOUT`,
 `STAR_SLIDE_RETRIES`, `STAR_SLIDE_LLM_PARALLEL`, `STAR_SLIDE_SAM3`.
 
 자세한 에이전트 사용 가이드는 [AGENTS.md](AGENTS.md)를 참고하세요.
@@ -235,6 +236,8 @@ uv run star-slide notebooklm run INPUT.pdf -o OUTPUT.pptx [options]
 | `--retries` | `2` | 깨진 JSON, layout 미생성, 일시적 LLM 실패 시 재시도 횟수 |
 | `--llm-parallel` | `5` | layout/raster group LLM 병렬 호출 수 |
 | `--layout-failure-mode` | `image_fallback` | 재시도 후에도 layout 생성이 실패한 슬라이드를 원본 이미지로 폴백할지, `fail`로 중단할지 선택 |
+| `--reconstruction-mode` | `auto` | `auto`, `hierarchical_overlay`, `image_split` 중 재구성 방식을 선택 |
+| `--child-object-max-area-ratio` | `0.25` | `hierarchical_overlay`에서 parent raster 밖으로 분리할 child 객체의 최대 슬라이드 면적비 |
 | `--sam3 / --no-sam3` | `--no-sam3` | SAM3 bbox refinement 사용 여부 (기본 OFF — 필요 시 명시적으로 활성화) |
 | `--hybrid-allowed-delta` | `0.0` | hybrid가 vector보다 이 값만큼 나빠도 hybrid 선택 허용 |
 | `--editable-embedded-text / --rasterize-embedded-text` | `--editable-embedded-text` | 큰 이미지 그룹 내부 텍스트를 편집 가능 객체로 유지할지 여부 |
