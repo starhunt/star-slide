@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -30,6 +31,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -37,26 +39,36 @@ from lxml import etree
 from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.dml import MSO_LINE_DASH_STYLE
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import nsmap as _pptx_nsmap  # noqa: F401  (lxml namespace 보장)
 from pptx.oxml.ns import qn
+from pptx.oxml.xmlchemy import BaseOxmlElement
+from pptx.presentation import Presentation as PptxPresentation
+from pptx.shapes.autoshape import Shape as PptxShape
+from pptx.slide import Slide as PptxSlide
 from pptx.util import Emu, Pt
 
 from star_slide.segmentation.sam2_auto import Sam2Mask, run_sam2_auto
+from star_slide.vision_llm.image_split_client import (
+    VisionClientError,
+    call_vision_json,
+)
 
 EMU_PER_INCH = 914400
 PT_PER_INCH = 72.0
-SLIDE_W_EMU = 12192000   # 13.333" — 표준 16:9
-SLIDE_H_EMU = 6858000    #  7.5"
+SLIDE_W_EMU = 12192000  # 13.333" — 표준 16:9
+SLIDE_H_EMU = 6858000  #  7.5"
 DEFAULT_FONT = "Apple SD Gothic Neo"
 
 # Codex Vision shape 분석 prompt
 CODEX_SHAPES_PROMPT = """첨부된 인포그래픽에서 모든 도형/객체 정보를 JSON 으로 추출해주세요. 다른 설명 없이 순수 JSON만.
 
 목적: PowerPoint 로 재구성하기 위한 layered 분리.
-- 단순 도형 (직사각형/둥근 직사각형/원형/타원/화살표/선) → PPT native shape 으로 재현
+- 단순 도형 (직사각형/둥근 직사각형/원형/타원/표준 화살표/선) → PPT native shape 으로 재현
 - 복잡한 픽토그램 (사람, 건물, 책, 지구본, 모자, 가방, 모니터 등) → alpha PNG 로 처리
+- 장식성 화살표 (그라데이션/곡선/3D/장식 있는 화살표) 도 픽토그램으로 처리
 
 형식:
 {
@@ -78,6 +90,8 @@ CODEX_SHAPES_PROMPT = """첨부된 인포그래픽에서 모든 도형/객체 �
 }
 
 요구사항:
+- ★ image_size 는 입력 이미지의 실제 픽셀 크기 [width, height]. 절대 누락하거나 null
+  로 주지 말 것. 모르면 실제 측정값을 추정해서라도 채울 것.
 - 큰 컨테이너 박스, 그 안의 작은 카드, 점선 박스, 화살표, 픽토그램 모두 빠짐없이
 - 픽토그램은 type='pictogram' (alpha PNG 처리 대상). bbox 만 정확히.
 - 텍스트는 무시 (별도 추출됨)
@@ -85,6 +99,8 @@ CODEX_SHAPES_PROMPT = """첨부된 인포그래픽에서 모든 도형/객체 �
 - ★ 화살표 (type='arrow') 는 가리키는 방향 'direction' 필수 (up/down/left/right 등).
   ↓ 아래는 'down', → 오른쪽은 'right', ↑ 위는 'up', ← 왼쪽은 'left'.
   방향이 시각 의미를 담고 있으므로 정확히.
+  ◆ type='arrow' 는 단색 + 표준 4방향 (up/down/left/right) + 직선형 화살표만.
+    곡선 화살표, 대각선, 그라데이션/입체/장식 있는 화살표는 type='pictogram'으로.
 - ★ 픽토그램 (type='pictogram') 의 'on_dark_background': true 면 어두운 박스 (예:
   파랑/남색 카드) 위 흰색 아이콘. false 면 흰 배경 위 컬러 아이콘. 이 정보로
   alpha 추출 임계를 반전한다.
@@ -118,6 +134,39 @@ class ImageSplitOptions:
     image_split 의 첫 단계에서 적용 — codex 분석/image_gen 이 워터마크를
     객체나 텍스트로 잘못 잡는 것을 방지. NotebookLM 외 입력에는 효과 없음
     (배경색 fill 만이라 무해)."""
+
+    arrow_native_max_area_ratio: float = 0.04
+    """codex 가 type='arrow' 로 식별한 도형을 PPT native arrow shape 으로 재현하는
+    최대 면적 비율 (bbox 면적 / 슬라이드 면적). 이를 초과하면 단순 화살표가 아닐
+    가능성이 높으므로 raster alpha crop (pictogram 강등) 으로 처리. 표준 4방향
+    + 단색 + 작은 크기 화살표만 native 로 가져가 편집성을 보장."""
+
+    vision_base_url: str = ""
+    """cliproxy/OpenAI 호환 endpoint. 빈 문자열이면 config.py Settings.vision_base_url
+    (STAR_SLIDE_VISION_BASE_URL) 사용. NotebookLmAutoOptions 의 base_url 이
+    자동 전파된다."""
+
+    vision_model: str = ""
+    """텍스트/도형 layout 분석에 사용할 vision 모델. 빈 문자열이면 config.py
+    Settings.vision_model (STAR_SLIDE_VISION_MODEL, default 'claude-opus') 사용.
+    cliproxy 가 multiplex 하는 실제 alias (claude-opus, gemini-pro, svtx-pro 등)
+    를 지정. gpt-5.5 같은 codex provider 라우팅 모델은 cliproxy 측에서 hang 되는
+    사례가 있어 multimodal 전용 alias 권장."""
+
+    vision_timeout_sec: float = 240.0
+    """slide-per-call vision LLM timeout (sec). 한 슬라이드 분석이 이 시간을 초과하면
+    예외 발생 → 호출자(process_slide)가 단계별 fallback. 너무 길게 (예: 600s) 잡으면
+    11장 deck 에서 timeout 한 장이 전체 진행을 막아 사용자 체감 시간이 폭증한다."""
+
+    image_gen_model: str = ""
+    """텍스트 제거된 배경 이미지 생성 모델. text_erase_mode='codex_imagegen' 일 때만
+    사용. 빈 문자열이면 codex CLI 기본 모델 (ChatGPT 계정 인증 + builtin image_gen
+    2.0 도구) 을 사용 — 권장. cliproxy 는 input-image 를 받는 image-edit endpoint
+    를 노출하지 않아 이 단계만 codex CLI subprocess 로 직접 호출한다."""
+
+    vision_api_key: str = ""
+    """cliproxy/OpenAI 호환 API key. 빈 문자열이면 환경변수
+    VISION_PROXY_API_KEY / LOCAL_CLAUDE_API_KEY 를 순서대로 시도."""
 
     slide_parallel: int = 5
     """multi-slide image_split 의 슬라이드 병렬 처리 동시 개수. 슬라이드 1장당
@@ -192,6 +241,8 @@ CODEX_TEXT_PROMPT = """이미지의 모든 텍스트를 JSON 으로 추출해주
 }
 
 요구사항:
+- ★ image_size 는 입력 이미지의 실제 픽셀 크기 [width, height]. 절대 누락하거나 null 로
+  주지 말 것. 모르면 [0, 0] 보다는 실제 측정값을 추정해서라도 채울 것.
 - 모든 한글/영문 텍스트 빠짐없이 (제목, 부제, 라벨, 박스 안 글, 따옴표 안 글, footer 등)
 - bbox 픽셀 좌표 (좌상단 기준, 가로세로 px)
 - font_size_px = 글자 자체 픽셀 높이 (라인 높이 X)
@@ -203,20 +254,30 @@ CODEX_TEXT_PROMPT = """이미지의 모든 텍스트를 JSON 으로 추출해주
 
 
 def normalize_text_layout_to_image_size(
-    text_layout: dict,
+    text_layout: dict[str, Any],
     actual_image_size: tuple[int, int],
-) -> dict:
+) -> dict[str, Any]:
     """codex 가 다른 해상도 (예: 2048x1152) 로 좌표를 줄 수 있어, 실제 이미지 크기로
     bbox/font_size_px 를 비례 변환.
 
     text_layout['image_size'] 가 실제와 다르면 모든 텍스트의 좌표를 스케일.
-    in-place 수정 후 반환.
+    in-place 수정 후 반환. vision LLM 이 image_size 를 빼먹거나 null 로 주는
+    경우 실제 이미지 크기로 채워 넣고 정규화는 skip (좌표가 이미 실제 크기 기준
+    이라고 가정).
     """
-    if "image_size" not in text_layout or "texts" not in text_layout:
+    if "texts" not in text_layout:
         return text_layout
-    js_w, js_h = text_layout["image_size"]
+    js_size = text_layout.get("image_size")
+    if not isinstance(js_size, (list, tuple)) or len(js_size) != 2:
+        text_layout["image_size"] = list(actual_image_size)
+        return text_layout
+    js_w, js_h = js_size
+    if not isinstance(js_w, (int, float)) or not isinstance(js_h, (int, float)):
+        text_layout["image_size"] = list(actual_image_size)
+        return text_layout
     real_w, real_h = actual_image_size
     if js_w <= 0 or js_h <= 0:
+        text_layout["image_size"] = list(actual_image_size)
         return text_layout
     if abs(js_w - real_w) <= 4 and abs(js_h - real_h) <= 4:
         return text_layout  # 같음
@@ -239,88 +300,124 @@ def normalize_text_layout_to_image_size(
     return text_layout
 
 
-def analyze_text_with_codex(
+def _resolve_vision_api_key(api_key: str) -> str:
+    """빈 문자열이면 config.py Settings.vision_api_key (STAR_SLIDE_VISION_API_KEY) →
+    환경변수 VISION_PROXY_API_KEY / LOCAL_CLAUDE_API_KEY 순서로 fallback."""
+    if api_key:
+        return api_key
+    from star_slide.config import get_settings
+
+    settings_key = get_settings().vision_api_key
+    if settings_key:
+        return settings_key
+    return os.environ.get("VISION_PROXY_API_KEY") or os.environ.get("LOCAL_CLAUDE_API_KEY") or ""
+
+
+def _resolve_vision_base_url(base_url: str) -> str:
+    """빈 문자열이면 config.py Settings.vision_base_url 사용."""
+    if base_url:
+        return base_url
+    from star_slide.config import get_settings
+
+    return get_settings().vision_base_url
+
+
+def _resolve_vision_model(model: str) -> str:
+    """빈 문자열이면 config.py Settings.vision_model 사용."""
+    if model:
+        return model
+    from star_slide.config import get_settings
+
+    return get_settings().vision_model
+
+
+def analyze_text_with_vision(
     image_path: Path,
     *,
     out_json: Path,
+    base_url: str,
+    model: str,
+    api_key: str,
     timeout_sec: float = 600.0,
-) -> dict:
-    """Codex CLI Vision LLM 으로 이미지의 텍스트 + 위치 추출.
+) -> dict[str, Any]:
+    """cliproxy/OpenAI 호환 chat/completions 로 텍스트 + 위치 추출.
 
-    PoC 와 동일하게 prompt 를 stdin 으로 전달 (인자로 멀티라인 prompt 를 보내면
-    codex 가 `No prompt provided via stdin.` 으로 종료함).
+    응답 JSON 을 out_json 에도 저장 (디버깅/QA 용).
     """
     out_json.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "codex", "exec",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--skip-git-repo-check", "--ephemeral",
-        "-i", str(image_path),
-        "-o", str(out_json),
-    ]
-    completed = subprocess.run(
-        cmd, input=CODEX_TEXT_PROMPT,
-        capture_output=True, text=True, timeout=timeout_sec, check=False,
+    try:
+        data = call_vision_json(
+            image_path,
+            CODEX_TEXT_PROMPT,
+            base_url=_resolve_vision_base_url(base_url),
+            model=_resolve_vision_model(model),
+            api_key=_resolve_vision_api_key(api_key),
+            timeout_sec=timeout_sec,
+        )
+    except VisionClientError as exc:
+        raise RuntimeError(f"Vision 텍스트 분석 실패: {exc}") from exc
+    out_json.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"Codex 텍스트 분석 실패 (exit={completed.returncode}): "
-            f"{completed.stderr[:500]}"
-        )
-    if not out_json.exists() or out_json.stat().st_size == 0:
-        raise RuntimeError(
-            f"Codex 결과 파일이 비어있거나 없음: {out_json}\n"
-            f"stdout 마지막 500자:\n{completed.stdout[-500:]}"
-        )
-    return json.loads(out_json.read_text(encoding="utf-8"))
+    return data
 
 
-def analyze_shapes_with_codex(
+def analyze_shapes_with_vision(
     image_path: Path,
     *,
     out_json: Path,
+    base_url: str,
+    model: str,
+    api_key: str,
     timeout_sec: float = 600.0,
-) -> dict:
-    """Codex Vision 으로 도형/픽토그램 layout 추출 (텍스트 제외).
+) -> dict[str, Any]:
+    """cliproxy/OpenAI 호환 chat/completions 로 도형/픽토그램 layout 추출.
 
     출력 JSON:
       {"image_size": [w, h], "shapes": [{type, bbox, fill, stroke, ..., z_hint}, ...]}
     """
     out_json.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "codex", "exec",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--skip-git-repo-check", "--ephemeral",
-        "-i", str(image_path),
-        "-o", str(out_json),
-    ]
-    completed = subprocess.run(
-        cmd, input=CODEX_SHAPES_PROMPT,
-        capture_output=True, text=True, timeout=timeout_sec, check=False,
+    try:
+        data = call_vision_json(
+            image_path,
+            CODEX_SHAPES_PROMPT,
+            base_url=_resolve_vision_base_url(base_url),
+            model=_resolve_vision_model(model),
+            api_key=_resolve_vision_api_key(api_key),
+            timeout_sec=timeout_sec,
+        )
+    except VisionClientError as exc:
+        raise RuntimeError(f"Vision 도형 분석 실패: {exc}") from exc
+    out_json.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"Codex 도형 분석 실패 (exit={completed.returncode}): "
-            f"{completed.stderr[:500]}"
-        )
-    if not out_json.exists() or out_json.stat().st_size == 0:
-        raise RuntimeError(
-            f"Codex 도형 결과 파일이 비어있음: {out_json}\n"
-            f"stdout 마지막 500자:\n{completed.stdout[-500:]}"
-        )
-    return json.loads(out_json.read_text(encoding="utf-8"))
+    return data
 
 
 def normalize_shapes_to_image_size(
-    shapes_layout: dict,
+    shapes_layout: dict[str, Any],
     actual_image_size: tuple[int, int],
-) -> dict:
-    """text_layout 과 동일 — codex 가 다른 해상도로 좌표를 줘도 실제 크기로 변환."""
-    if "image_size" not in shapes_layout or "shapes" not in shapes_layout:
+) -> dict[str, Any]:
+    """text_layout 과 동일 — codex 가 다른 해상도로 좌표를 줘도 실제 크기로 변환.
+
+    vision LLM 이 image_size 를 빼먹거나 null 로 주는 경우 실제 이미지 크기로
+    채워 넣고 정규화는 skip.
+    """
+    if "shapes" not in shapes_layout:
         return shapes_layout
-    js_w, js_h = shapes_layout["image_size"]
+    js_size = shapes_layout.get("image_size")
+    if not isinstance(js_size, (list, tuple)) or len(js_size) != 2:
+        shapes_layout["image_size"] = list(actual_image_size)
+        return shapes_layout
+    js_w, js_h = js_size
+    if not isinstance(js_w, (int, float)) or not isinstance(js_h, (int, float)):
+        shapes_layout["image_size"] = list(actual_image_size)
+        return shapes_layout
     real_w, real_h = actual_image_size
     if js_w <= 0 or js_h <= 0:
+        shapes_layout["image_size"] = list(actual_image_size)
         return shapes_layout
     if abs(js_w - real_w) <= 4 and abs(js_h - real_h) <= 4:
         return shapes_layout
@@ -356,62 +453,73 @@ CODEX_REMOVE_TEXT_PROMPT = """첨부된 한글 인포그래픽에서 모든 텍�
 """
 
 
-def remove_text_codex_imagegen(
+def remove_text_with_image_gen(
     image_path: Path,
     *,
     out_png: Path,
+    model: str = "",
     target_size: tuple[int, int] | None = None,
     timeout_sec: float = 600.0,
 ) -> Path:
-    """Codex image_gen 2.0 으로 텍스트만 제거된 이미지 생성.
+    """codex CLI 의 builtin image_gen (gpt-image 2.0) 도구로 텍스트 제거 이미지 생성.
 
-    PoC 와 동일하게 prompt 를 stdin 으로 전달 (인자 전달은 codex 가 거부).
-    Codex 가 image_gen 도구로 새 PNG 를 생성하면 보통 ~/.codex/generated_images/.../ig_*.png
-    경로에 저장하고 stdout 마지막 줄에 그 경로(들)를 출력한다.
+    cliproxy 는 input-image 를 받는 image-edit endpoint 를 노출하지 않으므로,
+    image_gen 단계만 codex CLI subprocess 로 직접 호출한다 (text/shape 분석은
+    cliproxy chat/completions 그대로 사용). codex 가 image_gen 도구로 새 PNG 를
+    생성하면 보통 ~/.codex/generated_images/.../ig_*.png 에 저장하고 stdout 마지막
+    줄에 그 경로를 출력한다.
 
     stdout 파싱 규칙:
-      - 입력 이미지 경로(image_path) 와 동일한 line 은 무시
-      - 'ig_' 접두사를 포함하거나 'generated_images' 디렉토리 안의 PNG 를 우선 채택
+      - 입력 이미지 경로와 동일한 line 은 무시
+      - 'generated_images' 디렉토리 안의 PNG 를 우선 채택 (가장 최근 mtime)
       - codex 가 image_gen 을 호출하지 않고 입력 그대로 반환한 경우 RuntimeError
+
+    model: 빈 문자열이면 codex 기본 모델 사용 (ChatGPT 계정 인증). 명시 시 codex
+           `-m` 인자로 전달. 단 codex 는 'gpt-image-*' 같은 image-only 모델명을
+           거부할 수 있어 기본 빈 문자열 권장.
     """
     out_png.parent.mkdir(parents=True, exist_ok=True)
     input_abs = str(image_path.resolve())
     cmd = [
-        "codex", "exec",
+        "codex",
+        "exec",
         "--dangerously-bypass-approvals-and-sandbox",
-        "--skip-git-repo-check", "--ephemeral",
-        "-i", str(image_path),
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "-i",
+        str(image_path),
     ]
+    if model:
+        cmd.extend(["-m", model])
     completed = subprocess.run(
-        cmd, input=CODEX_REMOVE_TEXT_PROMPT,
-        capture_output=True, text=True, timeout=timeout_sec, check=False,
+        cmd,
+        input=CODEX_REMOVE_TEXT_PROMPT,
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        check=False,
     )
     if completed.returncode != 0:
         raise RuntimeError(
-            f"Codex image_gen 실패 (exit={completed.returncode}): "
-            f"{completed.stderr[:500]}"
+            f"Codex image_gen 실패 (exit={completed.returncode}): {completed.stderr[:500]}"
         )
-    # 후보 PNG 경로 수집
     stdout_lines = [ln.strip() for ln in completed.stdout.splitlines() if ln.strip()]
     candidates: list[Path] = []
     for line in stdout_lines:
         if not line.endswith(".png"):
             continue
-        # codex stdout 에는 절대 경로 외에 다른 텍스트도 섞여 있을 수 있으므로
-        # 경로처럼 보이는 부분만 추출 (마지막 공백 이후)
         path_str = line.rsplit(" ", 1)[-1]
-        if not Path(path_str).exists():
+        candidate = Path(path_str)
+        if not candidate.exists():
             continue
-        if Path(path_str).resolve() == Path(input_abs).resolve():
+        if candidate.resolve() == Path(input_abs).resolve():
             continue
-        candidates.append(Path(path_str))
-
+        candidates.append(candidate)
     if not candidates:
         raise RuntimeError(
             "Codex image_gen 출력 PNG 경로를 찾을 수 없음 (image_gen 도구 미호출 의심). "
             f"stdout 마지막 500자:\n{completed.stdout[-500:]}"
         )
-    # generated_images 디렉토리 안의 ig_* PNG 를 우선 채택 (가장 최근 mtime)
     generated = [p for p in candidates if "generated_images" in str(p)]
     pool = generated or candidates
     chosen = max(pool, key=lambda p: p.stat().st_mtime)
@@ -419,12 +527,19 @@ def remove_text_codex_imagegen(
     if target_size is not None:
         with Image.open(out_png) as im:
             if im.size != target_size:
-                im.convert("RGB").resize(target_size, Image.LANCZOS).save(out_png)
+                im.convert("RGB").resize(
+                    target_size,
+                    Image.Resampling.LANCZOS,
+                ).save(out_png)
     return out_png
 
 
 def _quantize_color(rgb: tuple[int, int, int], step: int = 16) -> tuple[int, int, int]:
-    return tuple((c // step) * step + step // 2 for c in rgb)
+    return (
+        (rgb[0] // step) * step + step // 2,
+        (rgb[1] // step) * step + step // 2,
+        (rgb[2] // step) * step + step // 2,
+    )
 
 
 def _sample_ring_color(
@@ -449,17 +564,18 @@ def _sample_ring_color(
         return (255, 255, 255)
     rh, rw = region.shape[:2]
     mask = np.ones((rh, rw), dtype=bool)
-    mask[inner_y0 - y0:inner_y1 - y0, inner_x0 - x0:inner_x1 - x0] = False
+    mask[inner_y0 - y0 : inner_y1 - y0, inner_x0 - x0 : inner_x1 - x0] = False
     ring_pixels = region[mask]
     if len(ring_pixels) == 0:
         return (255, 255, 255)
     quant = [_quantize_color(tuple(p)) for p in ring_pixels]
-    return tuple(int(c) for c in Counter(quant).most_common(1)[0][0])
+    most_common = Counter(quant).most_common(1)[0][0]
+    return int(most_common[0]), int(most_common[1]), int(most_common[2])
 
 
 def remove_text_solid_fill(
     image_path: Path,
-    text_layout: dict,
+    text_layout: dict[str, Any],
     *,
     out_png: Path,
     pad: int = 6,
@@ -498,7 +614,7 @@ def remove_text_solid_fill(
 def _upsample_mask(seg_small: np.ndarray, target_size: tuple[int, int]) -> np.ndarray:
     seg_uint = (seg_small.astype(np.uint8)) * 255
     seg_full = cv2.resize(seg_uint, target_size, interpolation=cv2.INTER_LINEAR)
-    return seg_full > 127
+    return np.asarray(seg_full > 127, dtype=np.bool_)
 
 
 def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
@@ -583,12 +699,17 @@ def extract_objects_sam2_clean(
         ys, xs = np.where(seg)
         if len(ys) == 0:
             continue
-        bbox = (int(xs.min()), int(ys.min()),
-                int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
+        bbox = (
+            int(xs.min()),
+            int(ys.min()),
+            int(xs.max() - xs.min() + 1),
+            int(ys.max() - ys.min() + 1),
+        )
         full_masks.append(Sam2Mask(bbox=bbox, segmentation=seg, score=m.score, area=int(seg.sum())))
 
     deduped = _filter_and_dedupe(
-        full_masks, (px_w, px_h),
+        full_masks,
+        (px_w, px_h),
         min_ratio=options.min_object_area_ratio,
         max_ratio=options.max_object_area_ratio,
         iou_threshold=options.object_iou_dedupe_threshold,
@@ -602,27 +723,39 @@ def extract_objects_sam2_clean(
         if out is None:
             continue
         bbox, path = out
-        layers.append(_ObjectLayer(
-            bbox=bbox, z=i,
-            area_ratio=float(m.area) / (px_w * px_h),
-            score=float(m.score),
-            alpha_path=path,
-        ))
+        layers.append(
+            _ObjectLayer(
+                bbox=bbox,
+                z=i,
+                area_ratio=float(m.area) / (px_w * px_h),
+                score=float(m.score),
+                alpha_path=path,
+            )
+        )
 
     json_path = out_dir / "object_layers.json"
-    json_path.write_text(json.dumps({
-        "image_size": [px_w, px_h],
-        "layer_count": len(layers),
-        "sam_total_masks": len(full_masks),
-        "layers": [
+    json_path.write_text(
+        json.dumps(
             {
-                "bbox": ly.bbox, "z": ly.z,
-                "area_ratio": ly.area_ratio, "score": ly.score,
-                "alpha_path": str(ly.alpha_path.relative_to(out_dir)),
-            }
-            for ly in layers
-        ],
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                "image_size": [px_w, px_h],
+                "layer_count": len(layers),
+                "sam_total_masks": len(full_masks),
+                "layers": [
+                    {
+                        "bbox": ly.bbox,
+                        "z": ly.z,
+                        "area_ratio": ly.area_ratio,
+                        "score": ly.score,
+                        "alpha_path": str(ly.alpha_path.relative_to(out_dir)),
+                    }
+                    for ly in layers
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return layers, json_path
 
 
@@ -631,7 +764,7 @@ def extract_objects_sam2_clean(
 # ============================================================
 
 
-def _set_east_asian_font(rPr, font_name: str) -> None:
+def _set_east_asian_font(rPr: BaseOxmlElement, font_name: str) -> None:
     for tag in ("a:ea", "a:cs"):
         for el in rPr.findall(qn(tag)):
             rPr.remove(el)
@@ -642,8 +775,8 @@ def _set_east_asian_font(rPr, font_name: str) -> None:
 
 
 def _add_textbox(
-    slide,
-    item: dict,
+    slide: PptxSlide,
+    item: dict[str, Any],
     *,
     scale: float,
     effective_dpi: float,
@@ -703,8 +836,7 @@ def _hex_to_rgb(s: str) -> tuple[int, int, int]:
         return (200, 200, 200)
 
 
-def _parse_dash(dash: str):
-    from pptx.enum.dml import MSO_LINE_DASH_STYLE
+def _parse_dash(dash: str) -> MSO_LINE_DASH_STYLE:
     return {
         "solid": MSO_LINE_DASH_STYLE.SOLID,
         "dashed": MSO_LINE_DASH_STYLE.DASH,
@@ -723,7 +855,7 @@ def _shape_z(z_hint: str) -> int:
     }.get((z_hint or "decoration").lower(), 25)
 
 
-def _apply_fill(shape, fill_spec: str) -> None:
+def _apply_fill(shape: PptxShape, fill_spec: str) -> None:
     """fill_spec: '#hex' | 'gradient:#hex1->#hex2' | 'transparent' | 'none'."""
     spec = (fill_spec or "").strip()
     if spec in ("transparent", "none", ""):
@@ -732,23 +864,23 @@ def _apply_fill(shape, fill_spec: str) -> None:
         return
     if spec.startswith("gradient:") and "->" in spec:
         # python-pptx 는 gradient 직접 지원 미흡 — XML 직접 작성
-        body = spec[len("gradient:"):]
+        body = spec[len("gradient:") :]
         c1, c2 = body.split("->", 1)
         r1, g1, b1 = _hex_to_rgb(c1)
         r2, g2, b2 = _hex_to_rgb(c2)
-        sp = shape.fill._xPr  # type: ignore[attr-defined]
+        sp = shape.fill._xPr
         # 기존 fill 제거
         for tag in ("a:noFill", "a:solidFill", "a:gradFill", "a:blipFill", "a:pattFill"):
             for el in sp.findall(qn(tag)):
                 sp.remove(el)
         grad_xml = (
             f'<a:gradFill xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" rotWithShape="1">'
-            f'<a:gsLst>'
+            f"<a:gsLst>"
             f'<a:gs pos="0"><a:srgbClr val="{r1:02X}{g1:02X}{b1:02X}"/></a:gs>'
             f'<a:gs pos="100000"><a:srgbClr val="{r2:02X}{g2:02X}{b2:02X}"/></a:gs>'
-            f'</a:gsLst>'
+            f"</a:gsLst>"
             f'<a:lin ang="5400000" scaled="0"/>'
-            f'</a:gradFill>'
+            f"</a:gradFill>"
         )
         sp.append(etree.fromstring(grad_xml))
         return
@@ -758,7 +890,12 @@ def _apply_fill(shape, fill_spec: str) -> None:
     shape.fill.fore_color.rgb = RGBColor(r, g, b)
 
 
-def _apply_stroke(shape, stroke_spec: str, stroke_width: float, dash: str) -> None:
+def _apply_stroke(
+    shape: PptxShape,
+    stroke_spec: str,
+    stroke_width: float,
+    dash: str,
+) -> None:
     line = shape.line
     if (stroke_spec or "none").lower() in ("none", ""):
         line.fill.background()
@@ -769,6 +906,9 @@ def _apply_stroke(shape, stroke_spec: str, stroke_width: float, dash: str) -> No
         line.width = Emu(int(stroke_width * EMU_PER_INCH / 96))
     with contextlib.suppress(Exception):
         line.dash_style = _parse_dash(dash)
+
+
+_STANDARD_ARROW_DIRECTIONS = frozenset({"up", "down", "left", "right"})
 
 
 def _resolve_arrow_shape(direction: str) -> MSO_SHAPE:
@@ -787,6 +927,70 @@ def _resolve_arrow_shape(direction: str) -> MSO_SHAPE:
     }.get(d, MSO_SHAPE.RIGHT_ARROW)
 
 
+def _is_simple_arrow(
+    shape_data: dict[str, Any],
+    *,
+    image_size: tuple[int, int],
+    max_area_ratio: float,
+) -> bool:
+    """codex 가 type='arrow' 로 잡은 도형이 PPT native arrow 로 재현하기 안전한지 판정.
+
+    조건 (모두 충족):
+      - direction 이 표준 4방향 (up/down/left/right). 대각선/곡선 X.
+      - fill 이 단색(#hex) 또는 transparent. gradient/3D X.
+      - 크기가 슬라이드 면적 대비 max_area_ratio 이하.
+      - stroke_width 가 비정상적으로 두껍지 않음 (단순 line 화살표 보장).
+
+    실패 시 codex 결과가 잘못된 게 아니라, 단지 raster crop 으로 강등해야 한다는 신호.
+    """
+    if (shape_data.get("type") or "").lower() != "arrow":
+        return False
+    direction = (shape_data.get("direction") or "").lower().strip()
+    if direction not in _STANDARD_ARROW_DIRECTIONS:
+        return False
+    fill = (shape_data.get("fill") or "transparent").strip().lower()
+    if fill.startswith("gradient:"):
+        return False
+    bbox = shape_data.get("bbox", [0, 0, 0, 0])
+    if len(bbox) != 4 or bbox[2] <= 0 or bbox[3] <= 0:
+        return False
+    img_w, img_h = image_size
+    if img_w <= 0 or img_h <= 0:
+        return False
+    area_ratio = (float(bbox[2]) * float(bbox[3])) / (float(img_w) * float(img_h))
+    return area_ratio <= max_area_ratio
+
+
+def demote_complex_arrows_to_pictogram(
+    shapes_layout: dict[str, Any],
+    *,
+    max_area_ratio: float,
+) -> int:
+    """단순 케이스가 아닌 화살표를 pictogram 으로 강등 (in-place).
+
+    이렇게 강등된 화살표는 native PPT shape 분기에서 제외되고,
+    crop_pictograms_from_codex_shapes 에서 raster alpha crop 으로 처리된다.
+
+    반환: 강등된 개수.
+    """
+    if not isinstance(shapes_layout, dict):
+        return 0
+    image_size = shapes_layout.get("image_size") or [0, 0]
+    if len(image_size) != 2:
+        return 0
+    img_w, img_h = int(image_size[0]), int(image_size[1])
+    demoted = 0
+    for s in shapes_layout.get("shapes", []):
+        if (s.get("type") or "").lower() != "arrow":
+            continue
+        if not _is_simple_arrow(s, image_size=(img_w, img_h), max_area_ratio=max_area_ratio):
+            s["type"] = "pictogram"
+            s["z_hint"] = "pictogram"
+            s["_demoted_from"] = "arrow"
+            demoted += 1
+    return demoted
+
+
 def _infer_arrow_direction_from_bbox(bbox: list[float]) -> str:
     """bbox 종횡비로 방향 추론 (codex 가 direction 안 줬을 때 fallback).
 
@@ -802,7 +1006,12 @@ def _infer_arrow_direction_from_bbox(bbox: list[float]) -> str:
     return "right"
 
 
-def _add_native_shape(slide, shape_data: dict, *, scale: float) -> None:
+def _add_native_shape(
+    slide: PptxSlide,
+    shape_data: dict[str, Any],
+    *,
+    scale: float,
+) -> None:
     """codex shape 한 개 → PPT native shape (rect/rounded/oval/arrow/line)."""
     bbox = shape_data.get("bbox", [0, 0, 0, 0])
     if len(bbox) != 4 or bbox[2] <= 0 or bbox[3] <= 0:
@@ -816,6 +1025,7 @@ def _add_native_shape(slide, shape_data: dict, *, scale: float) -> None:
     type_str = (shape_data.get("type") or "").lower()
 
     # 화살표는 direction 별 native shape 선택
+    auto_shape: MSO_SHAPE | None
     if type_str == "arrow":
         direction = shape_data.get("direction") or _infer_arrow_direction_from_bbox(bbox)
         auto_shape = _resolve_arrow_shape(direction)
@@ -830,8 +1040,8 @@ def _add_native_shape(slide, shape_data: dict, *, scale: float) -> None:
             "line": MSO_SHAPE.RECTANGLE,  # line 은 가는 직사각형으로 근사
         }
         auto_shape = auto_shape_map.get(type_str)
-        if auto_shape is None:
-            return  # pictogram 등은 별도 처리 (alpha PNG)
+    if auto_shape is None:
+        return  # pictogram 등은 별도 처리 (alpha PNG)
 
     shape = slide.shapes.add_shape(auto_shape, left, top, width, height)
     _apply_fill(shape, shape_data.get("fill", "transparent"))
@@ -847,15 +1057,15 @@ def _add_native_shape(slide, shape_data: dict, *, scale: float) -> None:
 
 
 def _add_image_split_slide(
-    prs: Presentation,
+    prs: PptxPresentation,
     *,
     image_size: tuple[int, int],
     background_path: Path | None,
     background_mode: str,
-    text_layout: dict,
+    text_layout: dict[str, Any],
     object_layers: list[_ObjectLayer],
     font_name: str,
-    shapes_layout: dict | None = None,
+    shapes_layout: dict[str, Any] | None = None,
 ) -> None:
     """기존 Presentation 에 1 슬라이드 추가. multi-slide 합성용.
 
@@ -874,12 +1084,19 @@ def _add_image_split_slide(
 
     if background_mode == "clean" and background_path is not None:
         slide.shapes.add_picture(
-            str(background_path), 0, 0,
-            width=prs.slide_width, height=prs.slide_height,
+            str(background_path),
+            0,
+            0,
+            width=prs.slide_width,
+            height=prs.slide_height,
         )
     elif background_mode == "white":
         bg = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE, 0, 0, prs.slide_width, prs.slide_height,
+            MSO_SHAPE.RECTANGLE,
+            0,
+            0,
+            prs.slide_width,
+            prs.slide_height,
         )
         bg.fill.solid()
         bg.fill.fore_color.rgb = RGBColor(255, 255, 255)
@@ -889,13 +1106,16 @@ def _add_image_split_slide(
     # native shape 들 (z_hint 작은 순 = 뒤). 같은 z 안에서는 면적 큰 순.
     if shapes_layout:
         natives = [
-            s for s in shapes_layout.get("shapes", [])
+            s
+            for s in shapes_layout.get("shapes", [])
             if (s.get("type") or "").lower() not in ("pictogram",)
         ]
-        natives.sort(key=lambda s: (
-            _shape_z(s.get("z_hint", "decoration")),
-            -(s.get("bbox", [0, 0, 0, 0])[2] * s.get("bbox", [0, 0, 0, 0])[3]),
-        ))
+        natives.sort(
+            key=lambda s: (
+                _shape_z(s.get("z_hint", "decoration")),
+                -(s.get("bbox", [0, 0, 0, 0])[2] * s.get("bbox", [0, 0, 0, 0])[3]),
+            )
+        )
         for sd in natives:
             _add_native_shape(slide, sd, scale=scale)
 
@@ -904,8 +1124,10 @@ def _add_image_split_slide(
         x, y, w, h = ly.bbox
         slide.shapes.add_picture(
             str(ly.alpha_path),
-            Emu(int(x * scale)), Emu(int(y * scale)),
-            width=Emu(int(w * scale)), height=Emu(int(h * scale)),
+            Emu(int(x * scale)),
+            Emu(int(y * scale)),
+            width=Emu(int(w * scale)),
+            height=Emu(int(h * scale)),
         )
 
     # textbox 최상단
@@ -917,12 +1139,12 @@ def compose_image_split_pptx(
     *,
     image_size: tuple[int, int],
     background_path: Path | None,
-    text_layout: dict,
+    text_layout: dict[str, Any],
     object_layers: list[_ObjectLayer],
     out_path: Path,
     font_name: str = DEFAULT_FONT,
     background_mode: str = "white",
-    shapes_layout: dict | None = None,
+    shapes_layout: dict[str, Any] | None = None,
 ) -> Path:
     """단일 슬라이드 PPTX 생성."""
     prs = Presentation()
@@ -977,12 +1199,12 @@ def _estimate_picto_background(
     for px in quant:
         key = (int(px[0]), int(px[1]), int(px[2]))
         counts[key] = counts.get(key, 0) + 1
-    return max(counts, key=counts.get)
+    return max(counts, key=counts.__getitem__)
 
 
 def crop_pictograms_from_codex_shapes(
     clean_image_path: Path,
-    shapes_layout: dict,
+    shapes_layout: dict[str, Any],
     *,
     out_dir: Path,
 ) -> list[_ObjectLayer]:
@@ -999,7 +1221,9 @@ def crop_pictograms_from_codex_shapes(
     h, w = arr.shape[:2]
     out_dir.mkdir(parents=True, exist_ok=True)
     layers: list[_ObjectLayer] = []
-    pictos = [s for s in shapes_layout.get("shapes", []) if (s.get("type") or "").lower() == "pictogram"]
+    pictos = [
+        s for s in shapes_layout.get("shapes", []) if (s.get("type") or "").lower() == "pictogram"
+    ]
     pictos.sort(key=lambda s: -(s.get("bbox", [0, 0, 0, 0])[2] * s.get("bbox", [0, 0, 0, 0])[3]))
     for i, p in enumerate(pictos):
         bbox = p.get("bbox", [0, 0, 0, 0])
@@ -1012,7 +1236,7 @@ def crop_pictograms_from_codex_shapes(
         bh = min(h - y, int(bh))
         if bw <= 0 or bh <= 0:
             continue
-        crop_rgb = arr[y:y + bh, x:x + bw]
+        crop_rgb = arr[y : y + bh, x : x + bw]
         lum = (
             0.299 * crop_rgb[:, :, 0].astype(np.float32)
             + 0.587 * crop_rgb[:, :, 1].astype(np.float32)
@@ -1037,19 +1261,21 @@ def crop_pictograms_from_codex_shapes(
         rgba[:, :, 3] = alpha
         path = out_dir / f"picto_{i:03d}.png"
         Image.fromarray(rgba, mode="RGBA").save(path)
-        layers.append(_ObjectLayer(
-            bbox=(x, y, bw, bh),
-            z=i + 1000,
-            area_ratio=float(bw * bh) / (w * h),
-            score=1.0,
-            alpha_path=path,
-        ))
+        layers.append(
+            _ObjectLayer(
+                bbox=(x, y, bw, bh),
+                z=i + 1000,
+                area_ratio=float(bw * bh) / (w * h),
+                score=1.0,
+                alpha_path=path,
+            )
+        )
     return layers
 
 
 def compose_image_split_pptx_multi(
     *,
-    slides_data: list[dict],
+    slides_data: list[dict[str, Any]],
     out_path: Path,
     font_name: str = DEFAULT_FONT,
     background_mode: str = "white",
@@ -1070,6 +1296,19 @@ def compose_image_split_pptx_multi(
     prs.slide_width = Emu(SLIDE_W_EMU)
     prs.slide_height = Emu(SLIDE_H_EMU)
     for sd in slides_data:
+        if sd.get("_failed") and sd.get("background_path") is not None:
+            # 실패한 슬라이드는 input 이미지를 통째로 깐 raster 슬라이드로 대체
+            # — 비어 있는 슬라이드보다 사용자가 후속 편집하기 쉬움.
+            blank = prs.slide_layouts[6]
+            slide = prs.slides.add_slide(blank)
+            slide.shapes.add_picture(
+                str(sd["background_path"]),
+                0,
+                0,
+                width=prs.slide_width,
+                height=prs.slide_height,
+            )
+            continue
         _add_image_split_slide(
             prs,
             image_size=sd["image_size"],
@@ -1107,6 +1346,7 @@ def convert_image_split(
       workdir/objects/layer_NNN.png
       workdir/object_layers.json
     """
+
     def emit(msg: str, pct: float) -> None:
         if progress is not None:
             progress(msg, pct)
@@ -1114,21 +1354,29 @@ def convert_image_split(
     def check_cancel() -> None:
         if cancel is not None and cancel():
             from star_slide.pipeline.notebooklm_auto import JobCancelledError
+
             raise JobCancelledError("convert_image_split cancelled")
 
     workdir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
 
     check_cancel()
-    emit("Codex Vision 으로 텍스트 + 위치 추출 중", 5)
+    emit(f"Vision LLM 으로 텍스트 + 위치 추출 중 ({options.vision_model})", 5)
     text_json_path = workdir / "text_layout.json"
-    text_layout = analyze_text_with_codex(input_image, out_json=text_json_path)
+    text_layout = analyze_text_with_vision(
+        input_image,
+        out_json=text_json_path,
+        base_url=options.vision_base_url,
+        model=options.vision_model,
+        api_key=options.vision_api_key,
+        timeout_sec=options.vision_timeout_sec,
+    )
 
     check_cancel()
     image = Image.open(input_image).convert("RGB")
     target_size = image.size
 
-    # codex 가 다른 해상도로 좌표를 줄 수 있어 실제 이미지 크기로 정규화 후 저장
+    # vision LLM 이 다른 해상도로 좌표를 줄 수 있어 실제 이미지 크기로 정규화 후 저장
     js_size = text_layout.get("image_size", target_size)
     text_layout = normalize_text_layout_to_image_size(text_layout, target_size)
     if "_normalized_from" in text_layout:
@@ -1138,7 +1386,8 @@ def convert_image_split(
         )
         emit(
             f"텍스트 {len(text_layout.get('texts', []))}개 추출 "
-            f"(좌표 {js_size}→{target_size} 정규화)", 25,
+            f"(좌표 {js_size}→{target_size} 정규화)",
+            25,
         )
     else:
         emit(f"텍스트 {len(text_layout.get('texts', []))}개 추출", 25)
@@ -1147,8 +1396,11 @@ def convert_image_split(
     if options.text_erase_mode == "codex_imagegen":
         emit("Codex image_gen 으로 텍스트 제거된 배경 생성 중 (~30-60s)", 30)
         try:
-            remove_text_codex_imagegen(
-                input_image, out_png=clean_path, target_size=target_size,
+            remove_text_with_image_gen(
+                input_image,
+                out_png=clean_path,
+                target_size=target_size,
+                model=options.image_gen_model,
             )
         except Exception as exc:
             emit(f"Codex image_gen 실패 → solid fill 로 fallback: {exc}", 40)
@@ -1161,7 +1413,9 @@ def convert_image_split(
     check_cancel()
     emit(f"SAM2 로 객체 추출 중 (pps={options.sam_points_per_side})", 65)
     layers, layers_json = extract_objects_sam2_clean(
-        clean_path, out_dir=workdir, options=options,
+        clean_path,
+        out_dir=workdir,
+        options=options,
     )
     emit(f"{len(layers)}개 객체 alpha crop", 85)
 
@@ -1206,6 +1460,7 @@ def convert_image_split_multi(
     progress callback 은 전체 (0~100) 기준으로 emit. 슬라이드 1장당
     pct_per_slide = 100 / N 만큼 진행.
     """
+
     def emit(msg: str, pct: float) -> None:
         if progress is not None:
             progress(msg, pct)
@@ -1213,6 +1468,7 @@ def convert_image_split_multi(
     def check_cancel() -> None:
         if cancel is not None and cancel():
             from star_slide.pipeline.notebooklm_auto import JobCancelledError
+
             raise JobCancelledError("convert_image_split_multi cancelled")
 
     workdir.mkdir(parents=True, exist_ok=True)
@@ -1228,30 +1484,65 @@ def convert_image_split_multi(
     if options.remove_notebooklm_watermark:
         emit("NotebookLM 워터마크 사전 제거", 1)
         from star_slide.input.watermark_remover import remove_watermarks
+
         remove_watermarks(list(input_images))
 
     # 슬라이드 단위 작업을 worker 함수로 분리 — ThreadPoolExecutor 병렬 실행.
     # 각 슬라이드는 독립적 (workdir/slide_NNN/ 격리, 다른 슬라이드 결과 의존 X).
-    # codex 호출은 IO-bound (subprocess + HTTP) 라 GIL 이슈 없음.
+    # vision LLM 호출은 IO-bound (HTTP) 라 GIL 이슈 없음.
     import threading
+
     progress_lock = threading.Lock()
     completed_count = [0]  # mutable counter for thread-safe increment
 
-    def process_slide(i: int, img_path: Path) -> dict:
+    def _raster_fallback_slide(i: int, img_path: Path, error: str) -> dict[str, Any]:
+        """슬라이드 변환이 catastrophic 실패할 때 input 이미지를 그대로 raster 로
+        넣는 fallback 데이터를 반환. 텍스트/객체 없는 1장짜리 picture 슬라이드.
+        """
+        with Image.open(img_path) as im:
+            size = im.convert("RGB").size
+        return {
+            "_index": i,
+            "_failed": True,
+            "_failure_error": error,
+            "_failure_image": img_path,
+            "image_size": size,
+            "background_path": img_path,
+            "text_layout": {"image_size": list(size), "texts": []},
+            "object_layers": [],
+            "shapes_layout": None,
+            "_text_json": None,
+            "_layers_json": None,
+        }
+
+    def process_slide(i: int, img_path: Path) -> dict[str, Any]:
         slide_dir = workdir / f"slide_{i:03d}"
         slide_dir.mkdir(parents=True, exist_ok=True)
         check_cancel()
 
-        # Step 1: 텍스트 추출
+        # Step 1: 텍스트 추출 — 실패 시 빈 텍스트로 진행 (배경/객체는 계속).
         text_json = slide_dir / "text_layout.json"
-        text_layout = analyze_text_with_codex(img_path, out_json=text_json)
-        check_cancel()
         image = Image.open(img_path).convert("RGB")
         target_size = image.size
+        try:
+            text_layout = analyze_text_with_vision(
+                img_path,
+                out_json=text_json,
+                base_url=options.vision_base_url,
+                model=options.vision_model,
+                api_key=options.vision_api_key,
+                timeout_sec=options.vision_timeout_sec,
+            )
+        except Exception as exc:
+            with progress_lock:
+                emit(f"[slide {i}] 텍스트 분석 실패 → 텍스트 없이 진행: {exc}", -1)
+            text_layout = {"image_size": list(target_size), "texts": []}
+        check_cancel()
         text_layout = normalize_text_layout_to_image_size(text_layout, target_size)
         if "_normalized_from" in text_layout:
             text_json.write_text(
-                json.dumps(text_layout, ensure_ascii=False, indent=2), encoding="utf-8",
+                json.dumps(text_layout, ensure_ascii=False, indent=2),
+                encoding="utf-8",
             )
 
         check_cancel()
@@ -1259,7 +1550,12 @@ def convert_image_split_multi(
         clean_path = slide_dir / "02_clean_bg.png"
         if options.text_erase_mode == "codex_imagegen":
             try:
-                remove_text_codex_imagegen(img_path, out_png=clean_path, target_size=target_size)
+                remove_text_with_image_gen(
+                    img_path,
+                    out_png=clean_path,
+                    target_size=target_size,
+                    model=options.image_gen_model,
+                )
             except Exception as exc:
                 with progress_lock:
                     emit(f"[slide {i}] image_gen 실패 → solid fallback: {exc}", -1)
@@ -1268,44 +1564,73 @@ def convert_image_split_multi(
             remove_text_solid_fill(img_path, text_layout, out_png=clean_path)
 
         # Step 3: 객체 추출
-        shapes_layout: dict | None = None
+        shapes_layout: dict[str, Any] | None = None
         layers_json_path: Path | None = None
         if options.use_native_shapes:
             check_cancel()
             shapes_json_path = slide_dir / "shapes_layout.json"
             try:
-                shapes_layout = analyze_shapes_with_codex(clean_path, out_json=shapes_json_path)
+                shapes_layout = analyze_shapes_with_vision(
+                    clean_path,
+                    out_json=shapes_json_path,
+                    base_url=options.vision_base_url,
+                    model=options.vision_model,
+                    api_key=options.vision_api_key,
+                    timeout_sec=options.vision_timeout_sec,
+                )
                 shapes_layout = normalize_shapes_to_image_size(shapes_layout, target_size)
+                # 복잡/장식성 화살표는 raster crop 으로 강등 (single-source 분류 진입점).
+                demote_complex_arrows_to_pictogram(
+                    shapes_layout,
+                    max_area_ratio=options.arrow_native_max_area_ratio,
+                )
                 if "_normalized_from" in shapes_layout:
                     shapes_json_path.write_text(
                         json.dumps(shapes_layout, ensure_ascii=False, indent=2),
                         encoding="utf-8",
                     )
                 layers = crop_pictograms_from_codex_shapes(
-                    clean_path, shapes_layout, out_dir=slide_dir / "objects",
+                    clean_path,
+                    shapes_layout,
+                    out_dir=slide_dir / "objects",
                 )
                 layers_json_path = slide_dir / "object_layers.json"
-                layers_json_path.write_text(json.dumps({
-                    "image_size": list(target_size),
-                    "layer_count": len(layers),
-                    "source": "codex_pictogram_bbox",
-                    "layers": [
-                        {"bbox": ly.bbox, "z": ly.z, "area_ratio": ly.area_ratio,
-                         "alpha_path": str(ly.alpha_path.relative_to(slide_dir))}
-                        for ly in layers
-                    ],
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                layers_json_path.write_text(
+                    json.dumps(
+                        {
+                            "image_size": list(target_size),
+                            "layer_count": len(layers),
+                            "source": "codex_pictogram_bbox",
+                            "layers": [
+                                {
+                                    "bbox": ly.bbox,
+                                    "z": ly.z,
+                                    "area_ratio": ly.area_ratio,
+                                    "alpha_path": str(ly.alpha_path.relative_to(slide_dir)),
+                                }
+                                for ly in layers
+                            ],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
             except Exception as exc:
                 with progress_lock:
                     emit(f"[slide {i}] codex shape 분석 실패 → SAM2 fallback: {exc}", -1)
                 layers, layers_json_path = extract_objects_sam2_clean(
-                    clean_path, out_dir=slide_dir, options=options,
+                    clean_path,
+                    out_dir=slide_dir,
+                    options=options,
                 )
                 shapes_layout = None
         else:
             check_cancel()
             layers, layers_json_path = extract_objects_sam2_clean(
-                clean_path, out_dir=slide_dir, options=options,
+                clean_path,
+                out_dir=slide_dir,
+                options=options,
             )
 
         # 진행률 thread-safe 업데이트
@@ -1330,40 +1655,77 @@ def convert_image_split_multi(
             "_layers_json": layers_json_path,
         }
 
-    # 병렬 실행
+    # 병렬 실행. 한 슬라이드 catastrophic 실패 → raster fallback 으로 대체하고
+    # 다른 슬라이드는 계속 진행. JobCancelledError 만 즉시 전체 취소.
     parallel = max(1, min(int(options.slide_parallel), n))
     emit(f"image_split 슬라이드 {n}장 병렬 처리 시작 (parallel={parallel})", 5)
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
+    failed_count = 0
+
+    def _safe_process(i: int, img_path: Path) -> dict[str, Any]:
+        try:
+            return process_slide(i, img_path)
+        except Exception as exc:
+            from star_slide.pipeline.notebooklm_auto import JobCancelledError
+
+            if isinstance(exc, JobCancelledError):
+                raise
+            with progress_lock:
+                emit(f"[slide {i}] 슬라이드 처리 실패 → raster fallback: {exc}", -1)
+            return _raster_fallback_slide(i, img_path, str(exc))
+
     if parallel == 1 or n == 1:
         for i, img_path in enumerate(input_images, start=1):
-            results.append(process_slide(i, img_path))
+            r = _safe_process(i, img_path)
+            results.append(r)
+            if r.get("_failed"):
+                failed_count += 1
     else:
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
         with ThreadPoolExecutor(max_workers=parallel) as executor:
             futures = {
-                executor.submit(process_slide, i, img_path): i
+                executor.submit(_safe_process, i, img_path): (i, img_path)
                 for i, img_path in enumerate(input_images, start=1)
             }
             for fut in as_completed(futures):
-                results.append(fut.result())  # 예외 발생 시 raise
+                i, img_path = futures[fut]
+                try:
+                    r = fut.result()
+                except Exception as exc:  # JobCancelledError 등
+                    from star_slide.pipeline.notebooklm_auto import JobCancelledError
+
+                    if isinstance(exc, JobCancelledError):
+                        raise
+                    with progress_lock:
+                        emit(f"[slide {i}] 처리 실패 (예외) → raster fallback: {exc}", -1)
+                    r = _raster_fallback_slide(i, img_path, str(exc))
+                results.append(r)
+                if r.get("_failed"):
+                    failed_count += 1
 
     # 슬라이드 순서대로 정렬 (병렬 완료 순서가 다를 수 있음)
     results.sort(key=lambda r: r["_index"])
-    slides_data: list[dict] = []
+    if failed_count > 0:
+        emit(f"⚠ {failed_count}/{n} 슬라이드 실패 — raster fallback 으로 진행", -1)
+    slides_data: list[dict[str, Any]] = []
     last_clean_bg: Path | None = None
     last_text_json: Path | None = None
     last_layers_json: Path | None = None
     for r in results:
-        slides_data.append({
-            "image_size": r["image_size"],
-            "background_path": r["background_path"],
-            "text_layout": r["text_layout"],
-            "object_layers": r["object_layers"],
-            "shapes_layout": r["shapes_layout"],
-        })
+        slides_data.append(
+            {
+                "image_size": r["image_size"],
+                "background_path": r["background_path"],
+                "text_layout": r["text_layout"],
+                "object_layers": r["object_layers"],
+                "shapes_layout": r["shapes_layout"],
+                "_failed": bool(r.get("_failed")),
+            }
+        )
         last_clean_bg = r["background_path"]
-        last_text_json = r["_text_json"]
-        last_layers_json = r["_layers_json"]
+        last_text_json = r.get("_text_json") or last_text_json
+        last_layers_json = r.get("_layers_json") or last_layers_json
 
     check_cancel()
     emit(f"PPTX 합성 ({n} 슬라이드)", 95)

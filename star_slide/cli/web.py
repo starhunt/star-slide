@@ -19,7 +19,9 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 def run(
     host: str = typer.Option("127.0.0.1", "--host", help="바인드 호스트"),
     reload: bool = typer.Option(False, "--reload", help="개발용 auto reload"),
-    jobs_dir: Path = typer.Option(Path("output/web_jobs"), "--jobs-dir", help="웹 작업 산출물 경로"),
+    jobs_dir: Path = typer.Option(
+        Path("output/web_jobs"), "--jobs-dir", help="웹 작업 산출물 경로"
+    ),
 ) -> None:
     """업로드/비동기 변환/다운로드 웹앱을 실행한다.
 
@@ -33,10 +35,12 @@ def run(
         raise typer.Exit(1) from exc
     except ImportError as exc:
         console.print("[red]웹앱 의존성이 없습니다.[/]")
-        console.print("다음 명령으로 실행하세요: [bold]uv run --extra api star-slide web run[/bold]")
+        console.print(
+            "다음 명령으로 실행하세요: [bold]uv run --extra api star-slide web run[/bold]"
+        )
         raise typer.Exit(1) from exc
 
-    web_app.WEB_ROOT = jobs_dir
+    vars(web_app)["WEB_ROOT"] = jobs_dir
     jobs_dir.mkdir(parents=True, exist_ok=True)
     is_loopback = host in LOOPBACK_HOSTS
     # 호스트 기반 동적 SSRF 정책: loopback bind면 사내 LAN LLM 호출을 허용하고,

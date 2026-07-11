@@ -13,13 +13,23 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 from numpy.typing import NDArray
 from PIL import Image
 
 from star_slide.segmentation.iou import Bbox, mask_to_bbox
 
 DEFAULT_SAM2_MODEL = "facebook/sam2.1-hiera-large"
+
+
+def _require_torch() -> Any:
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "SAM2에는 GPU segmentation 의존성이 필요합니다. "
+            "`uv sync --extra gpu-segmentation`을 실행하세요."
+        ) from exc
+    return torch
 
 
 @dataclass(frozen=True)
@@ -41,6 +51,7 @@ class Sam2Result:
 
 
 def _select_device(prefer: str = "auto") -> str:
+    torch = _require_torch()
     if prefer == "auto":
         if torch.cuda.is_available():
             return "cuda"
@@ -58,7 +69,13 @@ def _get_pipeline(model_id: str, device: str) -> Any:
     if key in _LOADED_PIPELINE:
         return _LOADED_PIPELINE[key]
 
-    from transformers import pipeline
+    try:
+        from transformers import pipeline
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "SAM2에는 GPU segmentation 의존성이 필요합니다. "
+            "`uv sync --extra gpu-segmentation`을 실행하세요."
+        ) from exc
 
     # transformers pipeline은 device 인자에 'mps'/'cuda'/'cpu' 또는 정수 GPU 인덱스 받음
     pipe = pipeline(
@@ -105,6 +122,7 @@ def run_sam2_auto(
 
     pil = _to_pil(image)
     w, h = pil.size
+    torch = _require_torch()
 
     dev = _select_device(device)
     pipe = _get_pipeline(model_id=model_id, device=dev)

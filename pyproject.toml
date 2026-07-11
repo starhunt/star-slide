@@ -43,6 +43,7 @@ gpu-inpaint = [
 ]
 api = [
     "fastapi>=0.115.0",
+    "httpx2[http2,brotli,zstd]>=2.5.0",
     "uvicorn[standard]>=0.30.0",
     "celery[redis]>=5.4.0",
     "sqlalchemy>=2.0.30",
@@ -56,6 +57,7 @@ star-slide = "star_slide.cli.main:app"
 
 [dependency-groups]
 dev = [
+    "httpx2[http2,brotli,zstd]>=2.5.0",
     "pytest>=8.3.0",
     "pytest-cov>=5.0.0",
     "pytest-asyncio>=0.23.0",
@@ -112,6 +114,7 @@ warn_unused_ignores = true
 no_implicit_optional = true
 plugins = ["pydantic.mypy"]
 exclude = ["experiments/", "data/", ".venv/"]
+untyped_calls_exclude = ["pptx.dml.color"]
 
 [[tool.mypy.overrides]]
 module = ["tests.*", "scripts.*"]
@@ -121,6 +124,10 @@ disallow_untyped_defs = false
 module = [
     "pdf2image.*",
     "paddleocr.*",
+    "lxml.*",
+    "cv2",
+    "torch.*",
+    "transformers.*",
     "skimage.*",
     "skimage.metrics.*",
     "svg.path.*",

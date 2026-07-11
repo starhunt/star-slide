@@ -6,7 +6,6 @@ fake conversion pipeline (no LibreOffice / Vision LLM required).
 
 from __future__ import annotations
 
-import importlib
 import json
 import threading
 import time
@@ -34,12 +33,11 @@ def _write_png(path: Path, *, color: tuple[int, int, int]) -> None:
 def _drain_sse_lines(response: Any, *, deadline: float) -> list[str]:
     lines: list[str] = []
     for raw in response.iter_lines():
-        if isinstance(raw, bytes):
-            line = raw.decode("utf-8")
-        else:
-            line = raw or ""
+        line = raw.decode("utf-8") if isinstance(raw, bytes) else raw or ""
         lines.append(line)
-        if line.startswith("data:") and ('"status": "done"' in line or '"status": "cancelled"' in line):
+        if line.startswith("data:") and (
+            '"status": "done"' in line or '"status": "cancelled"' in line
+        ):
             break
         if time.monotonic() > deadline:
             break
@@ -79,7 +77,9 @@ def _install_fake_convert(
             progress("작업 시작", 5)
         for kind in ("images", "qa_vector", "qa_hybrid", "qa_selected"):
             for slide_no in (1, 2):
-                _write_png(workdir / kind / f"slide_{slide_no:03d}.png", color=(slide_no * 80, 100, 200))
+                _write_png(
+                    workdir / kind / f"slide_{slide_no:03d}.png", color=(slide_no * 80, 100, 200)
+                )
         if behaviour == "cancel":
             if gate is not None:
                 gate.set()
@@ -93,7 +93,9 @@ def _install_fake_convert(
         if progress:
             progress("hybrid layout 생성 중", 70)
         report_path = workdir / "notebooklm_auto_report.json"
-        report_path.write_text(json.dumps({"selected_qa": [], "vector_qa": [], "hybrid_qa": []}), encoding="utf-8")
+        report_path.write_text(
+            json.dumps({"selected_qa": [], "vector_qa": [], "hybrid_qa": []}), encoding="utf-8"
+        )
         output_path.write_bytes(b"PK\x03\x04 fake pptx")
         if pre_cleanup_hook is not None:
             pre_cleanup_hook(workdir)
@@ -115,7 +117,9 @@ def _install_fake_convert(
     monkeypatch.setattr(web_app_module, "convert_notebooklm_auto", fake_convert)
 
 
-def _wait_for_status(client: TestClient, job_id: str, target: set[str], *, timeout: float = 5.0) -> dict[str, Any]:
+def _wait_for_status(
+    client: TestClient, job_id: str, target: set[str], *, timeout: float = 5.0
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         response = client.get(f"/api/jobs/{job_id}")
@@ -127,7 +131,9 @@ def _wait_for_status(client: TestClient, job_id: str, target: set[str], *, timeo
     pytest.fail(f"job {job_id} did not reach {target} within {timeout}s")
 
 
-def test_done_job_streams_terminal_event(monkeypatch: pytest.MonkeyPatch, web_client: TestClient) -> None:
+def test_done_job_streams_terminal_event(
+    monkeypatch: pytest.MonkeyPatch, web_client: TestClient
+) -> None:
     _install_fake_convert(monkeypatch, behaviour="ok")
     response = web_client.post(
         "/api/jobs?filename=sample.pptx",
@@ -145,7 +151,9 @@ def test_done_job_streams_terminal_event(monkeypatch: pytest.MonkeyPatch, web_cl
     assert any('"status": "done"' in line for line in data_lines)
 
 
-def test_cancel_endpoint_stops_running_job(monkeypatch: pytest.MonkeyPatch, web_client: TestClient) -> None:
+def test_cancel_endpoint_stops_running_job(
+    monkeypatch: pytest.MonkeyPatch, web_client: TestClient
+) -> None:
     started = threading.Event()
     _install_fake_convert(monkeypatch, behaviour="cancel", gate=started)
     response = web_client.post(
@@ -164,7 +172,9 @@ def test_cancel_endpoint_stops_running_job(monkeypatch: pytest.MonkeyPatch, web_
     assert final["status"] == "cancelled"
 
 
-def test_rerun_endpoint_creates_new_job(monkeypatch: pytest.MonkeyPatch, web_client: TestClient) -> None:
+def test_rerun_endpoint_creates_new_job(
+    monkeypatch: pytest.MonkeyPatch, web_client: TestClient
+) -> None:
     _install_fake_convert(monkeypatch, behaviour="fail")
     response = web_client.post(
         "/api/jobs?filename=sample.pptx",
@@ -182,7 +192,9 @@ def test_rerun_endpoint_creates_new_job(monkeypatch: pytest.MonkeyPatch, web_cli
     _wait_for_status(web_client, new_id, {"done"}, timeout=5.0)
 
 
-def test_cancel_requires_json_content_type(monkeypatch: pytest.MonkeyPatch, web_client: TestClient) -> None:
+def test_cancel_requires_json_content_type(
+    monkeypatch: pytest.MonkeyPatch, web_client: TestClient
+) -> None:
     """CSRF guard: POST /cancel without application/json must be rejected."""
     started = threading.Event()
     _install_fake_convert(monkeypatch, behaviour="cancel", gate=started)
@@ -201,7 +213,9 @@ def test_cancel_requires_json_content_type(monkeypatch: pytest.MonkeyPatch, web_
     _wait_for_status(web_client, job_id, {"cancelled"}, timeout=3.0)
 
 
-def test_cancelled_job_resists_late_progress(monkeypatch: pytest.MonkeyPatch, web_client: TestClient) -> None:
+def test_cancelled_job_resists_late_progress(
+    monkeypatch: pytest.MonkeyPatch, web_client: TestClient
+) -> None:
     """Terminal-state guard: late progress() after cancel must not resurrect status."""
     cancel_seen = threading.Event()
 
@@ -332,3 +346,21 @@ def test_previews_endpoint_serves_jpegs(tmp_path: Path) -> None:
     with Image.open(sample) as img:
         assert img.format == "JPEG"
         assert img.size[0] <= 240
+
+
+def test_report_summary_ignores_malformed_collection_entries() -> None:
+    # Given: a persisted report containing malformed entries from a partial conversion
+    job = web_app_module.JobState(id="job-1", filename="sample.pptx", status="done")
+    report = {
+        "selected_qa": [None, {"slide_no": 1, "mean_abs_diff": 3.5}],
+        "vector_qa": "invalid",
+        "hybrid_qa": [],
+        "selection_report": [None, {"chosen": "vector"}],
+    }
+
+    # When: the API builds the user-facing report summary
+    summary = web_app_module.build_report_summary(job, report)
+
+    # Then: valid rows remain visible and malformed rows do not crash the endpoint
+    assert summary["summary"]["slide_count"] == 1
+    assert summary["summary"]["chosen_vector_count"] == 1

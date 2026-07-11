@@ -10,6 +10,7 @@ NotebookLM이 export 한 PPTX/PDF 슬라이드에는 우측 하단에 작은
 - 배경이 단색이 아닐 때는 약간의 자국이 남을 수 있지만, 대부분 NotebookLM
   슬라이드는 흰/단색 배경이라 충분
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,19 +29,23 @@ def _estimate_background(image: Image.Image) -> tuple[int, int, int]:
     width, height = rgb.size
     sample_px = max(1, min(EDGE_SAMPLE_PX, width // 4, height // 4))
     pixels: list[tuple[int, int, int]] = []
+    rgb_bytes = rgb.tobytes()
     # 모서리에서 멀리 떨어진 가장자리 라인만 샘플 — 워터마크가 모서리 안쪽에 있을 때
     # 제거 영역 자체는 제외하기 위해 우측 끝 일부는 건너뜀.
     horizontal_skip = int(width * 0.18)
     vertical_skip = int(height * 0.10)
     for y in range(sample_px):
         for x in range(horizontal_skip, width - horizontal_skip):
-            pixels.append(rgb.getpixel((x, y)))
+            offset = (y * width + x) * 3
+            pixels.append((rgb_bytes[offset], rgb_bytes[offset + 1], rgb_bytes[offset + 2]))
     for y in range(height - sample_px, height):
         for x in range(horizontal_skip, width - horizontal_skip):
-            pixels.append(rgb.getpixel((x, y)))
+            offset = (y * width + x) * 3
+            pixels.append((rgb_bytes[offset], rgb_bytes[offset + 1], rgb_bytes[offset + 2]))
     for x in range(sample_px):
         for y in range(vertical_skip, height - vertical_skip):
-            pixels.append(rgb.getpixel((x, y)))
+            offset = (y * width + x) * 3
+            pixels.append((rgb_bytes[offset], rgb_bytes[offset + 1], rgb_bytes[offset + 2]))
     if not pixels:
         return (255, 255, 255)
     # 채널별 중앙값
@@ -76,11 +81,10 @@ def remove_watermark_inplace(
     draw.rectangle([x1, y1, x2, y2], fill=bg)
     # 입력이 .jpg/.png 둘 다 있을 수 있으므로 형식 보존.
     suffix = image_path.suffix.lower()
-    save_kwargs: dict[str, object] = {}
     if suffix in {".jpg", ".jpeg"}:
-        save_kwargs["quality"] = 92
-        save_kwargs["optimize"] = True
-    img.save(image_path, **save_kwargs)
+        img.save(image_path, quality=92, optimize=True)
+    else:
+        img.save(image_path)
 
 
 def remove_watermarks(image_paths: list[Path]) -> int:
@@ -123,11 +127,10 @@ def remove_watermark_inpaint_inplace(image_path: Path) -> None:
     ImageDraw.Draw(mask).rectangle([x1, y1, x2, y2], fill=255)
     inpainted = inpaint_with_mask(img, mask)
     suffix = image_path.suffix.lower()
-    save_kwargs: dict[str, object] = {}
     if suffix in {".jpg", ".jpeg"}:
-        save_kwargs["quality"] = 92
-        save_kwargs["optimize"] = True
-    inpainted.save(image_path, **save_kwargs)
+        inpainted.save(image_path, quality=92, optimize=True)
+    else:
+        inpainted.save(image_path)
 
 
 def remove_watermarks_inpaint(image_paths: list[Path]) -> int:

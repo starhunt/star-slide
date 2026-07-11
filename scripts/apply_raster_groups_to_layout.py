@@ -62,9 +62,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layout-template", default="sample1_slide{slide_no:02d}.layout.json")
     parser.add_argument("--punchout-padding", type=int, default=6)
     parser.add_argument("--nontext-overlap-threshold", type=float, default=0.20)
-    parser.add_argument("--erase-mode", choices=["inpaint", "alpha", "none"], default="inpaint")
+    parser.add_argument(
+        "--erase-mode", choices=["inpaint", "alpha", "solid", "none"], default="inpaint"
+    )
     parser.add_argument("--drop-full-slide-grid", action="store_true")
     parser.add_argument("--rasterize-embedded-labels", action="store_true")
+    parser.add_argument(
+        "--peel-child-objects",
+        action="store_true",
+        help=(
+            "keep small editable objects inside a raster group as child objects and erase "
+            "their pixels from the parent raster layer"
+        ),
+    )
+    parser.add_argument(
+        "--child-object-max-area-ratio",
+        type=float,
+        default=0.25,
+        help="maximum child-object area / parent-group area ratio for --peel-child-objects",
+    )
     return parser.parse_args()
 
 
@@ -296,6 +312,64 @@ def inpaint_text_regions(
     image.putalpha(alpha)
 
 
+def _estimate_local_fill(
+    image: Image.Image, box: list[float], padding: int
+) -> tuple[int, int, int, int]:
+    """Estimate a flat fill color from pixels around a local punchout box."""
+    rgba = image.convert("RGBA")
+    x, y, w, h = [round(v) for v in box]
+    pad = max(1, padding, 4)
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(rgba.width, x + w + pad)
+    y2 = min(rgba.height, y + h + pad)
+    ix1 = max(0, x)
+    iy1 = max(0, y)
+    ix2 = min(rgba.width, x + w)
+    iy2 = min(rgba.height, y + h)
+    colors: dict[tuple[int, int, int, int], int] = {}
+    for py in range(y1, y2):
+        for px in range(x1, x2):
+            if ix1 <= px < ix2 and iy1 <= py < iy2:
+                continue
+            r, g, b, a = rgba.getpixel((px, py))
+            if a == 0:
+                continue
+            color = (
+                min(255, round(r / 8) * 8),
+                min(255, round(g / 8) * 8),
+                min(255, round(b / 8) * 8),
+                255,
+            )
+            colors[color] = colors.get(color, 0) + 1
+    if not colors:
+        return (255, 255, 255, 255)
+    return max(colors.items(), key=lambda item: item[1])[0]
+
+
+def solid_fill_regions(
+    image: Image.Image,
+    group_box: list[float],
+    rects: list[list[float]],
+    padding: int,
+) -> None:
+    """Erase child/text regions by filling them with a local flat background color."""
+    rgba = image.convert("RGBA")
+    draw = ImageDraw.Draw(rgba)
+    gx, gy, _gw, _gh = [round(v) for v in group_box]
+    for rect in rects:
+        x, y, w, h = rect
+        lx1 = max(0, round(x - gx) - padding)
+        ly1 = max(0, round(y - gy) - padding)
+        lx2 = min(rgba.width, round(x + w - gx) + padding)
+        ly2 = min(rgba.height, round(y + h - gy) + padding)
+        if lx2 <= lx1 or ly2 <= ly1:
+            continue
+        fill = _estimate_local_fill(rgba, [lx1, ly1, lx2 - lx1, ly2 - ly1], padding)
+        draw.rectangle((lx1, ly1, lx2, ly2), fill=fill)
+    image.paste(rgba)
+
+
 def make_asset(
     *,
     image_path: Path,
@@ -312,6 +386,8 @@ def make_asset(
         crop = source.crop((x, y, x + w, y + h))
     if punchouts and erase_mode == "alpha":
         punchout_rects(crop, [x, y, w, h], punchouts, padding)
+    elif punchouts and erase_mode == "solid":
+        solid_fill_regions(crop, [x, y, w, h], punchouts, padding)
     elif punchouts and erase_mode == "inpaint":
         inpaint_text_regions(crop, [x, y, w, h], punchouts, padding)
     asset_dir = out_dir / "assets" / slide_stem
@@ -334,6 +410,8 @@ def apply_to_layout(
     erase_mode: str,
     drop_full_slide_grid: bool,
     rasterize_embedded_labels: bool,
+    peel_child_objects: bool = False,
+    child_object_max_area_ratio: float = 0.25,
 ) -> dict[str, Any]:
     layout = json.loads(layout_path.read_text(encoding="utf-8"))
     slide_stem = Path(layout["image"]).stem
@@ -347,15 +425,23 @@ def apply_to_layout(
         for item in layout.get("background", {}).get("decorations", []):
             if item.get("type") == "grid":
                 bbox = item.get("bbox", [0, 0, 0, 0])
-                step = min(float(item.get("step_x", item.get("step", 999))), float(item.get("step_y", item.get("step", 999))))
-                if canvas_area > 0 and box_area([float(v) for v in bbox]) / canvas_area > 0.70 and step <= 12:
+                step = min(
+                    float(item.get("step_x", item.get("step", 999))),
+                    float(item.get("step_y", item.get("step", 999))),
+                )
+                if (
+                    canvas_area > 0
+                    and box_area([float(v) for v in bbox]) / canvas_area > 0.70
+                    and step <= 12
+                ):
                     continue
             decorations.append(item)
         layout.get("background", {})["decorations"] = decorations
 
-    text_punchouts_by_group: list[list[list[float]]] = [[] for _ in groups]
+    punchouts_by_group: list[list[list[float]]] = [[] for _ in groups]
     kept_objects: list[dict[str, Any]] = []
     removed: list[dict[str, Any]] = []
+    peeled_child_count = 0
 
     for obj in layout.get("objects", []):
         if is_notebooklm_watermark(obj):
@@ -388,15 +474,35 @@ def apply_to_layout(
             if keep_hit_indices:
                 kept_objects.append(obj)
                 for idx in keep_hit_indices:
-                    text_punchouts_by_group[idx].append(box)
+                    punchouts_by_group[idx].append(box)
             else:
                 removed.append(obj)
             continue
 
+        if peel_child_objects:
+            peel_hit_indices = []
+            for idx in hit_indices:
+                group_box = [float(v) for v in groups[idx]["bbox"]]
+                group_area = box_area(group_box)
+                object_area_ratio = box_area(box) / group_area if group_area > 0 else 1.0
+                if object_area_ratio <= child_object_max_area_ratio and (
+                    overlap_ratio(box, group_box) >= nontext_overlap_threshold
+                    or center_inside(box, group_box)
+                ):
+                    peel_hit_indices.append(idx)
+            if peel_hit_indices:
+                kept_objects.append(obj)
+                peeled_child_count += 1
+                for idx in peel_hit_indices:
+                    punchouts_by_group[idx].append(box)
+                continue
+
         should_remove = False
         for idx in hit_indices:
             group_box = [float(v) for v in groups[idx]["bbox"]]
-            if overlap_ratio(box, group_box) >= nontext_overlap_threshold or center_inside(box, group_box):
+            if overlap_ratio(box, group_box) >= nontext_overlap_threshold or center_inside(
+                box, group_box
+            ):
                 should_remove = True
                 break
         if should_remove:
@@ -410,7 +516,7 @@ def apply_to_layout(
         asset = make_asset(
             image_path=image_path,
             group=group,
-            punchouts=text_punchouts_by_group[idx - 1],
+            punchouts=punchouts_by_group[idx - 1],
             out_dir=out_dir,
             slide_stem=slide_stem,
             index=idx,
@@ -433,9 +539,12 @@ def apply_to_layout(
     layout["metadata"]["raster_group_replacement"] = {
         "groups": groups,
         "removed_object_count": len(removed),
-        "punched_text_regions": sum(len(items) for items in text_punchouts_by_group),
+        "punched_text_regions": sum(len(items) for items in punchouts_by_group),
+        "peeled_child_object_count": peeled_child_count,
         "erase_mode": erase_mode,
         "rasterize_embedded_labels": rasterize_embedded_labels,
+        "peel_child_objects": peel_child_objects,
+        "child_object_max_area_ratio": child_object_max_area_ratio,
     }
     return layout
 
@@ -456,6 +565,8 @@ def main() -> int:
             erase_mode=args.erase_mode,
             drop_full_slide_grid=args.drop_full_slide_grid,
             rasterize_embedded_labels=args.rasterize_embedded_labels,
+            peel_child_objects=args.peel_child_objects,
+            child_object_max_area_ratio=args.child_object_max_area_ratio,
         )
         out_path = args.out_dir / layout_path.name
         out_path.write_text(json.dumps(layout, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -25,6 +25,7 @@ from star_slide.api.preview_assets import (
     generate_previews,
     index_previews,
 )
+from star_slide.config import get_settings
 from star_slide.pipeline.notebooklm_auto import (
     JobCancelledError,
     NotebookLmAutoOptions,
@@ -151,7 +152,9 @@ def create_app() -> FastAPI:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise HTTPException(status_code=400, detail="요청 본문이 JSON 형식이어야 합니다.") from exc
+            raise HTTPException(
+                status_code=400, detail="요청 본문이 JSON 형식이어야 합니다."
+            ) from exc
         result = await asyncio.to_thread(probe_llm_endpoint, payload)
         return JSONResponse(result)
 
@@ -160,7 +163,9 @@ def create_app() -> FastAPI:
         try:
             payload = await request.json()
         except Exception as exc:
-            raise HTTPException(status_code=400, detail="요청 본문이 JSON 형식이어야 합니다.") from exc
+            raise HTTPException(
+                status_code=400, detail="요청 본문이 JSON 형식이어야 합니다."
+            ) from exc
         base_url = str(payload.get("baseUrl") or "").strip().rstrip("/")
         api_key = str(payload.get("apiKey") or "").strip()
         timeout = float(payload.get("timeout") or 10)
@@ -334,7 +339,9 @@ def create_app() -> FastAPI:
         job = require_job(job_id)
         if not job.report or not Path(job.report).exists():
             raise HTTPException(status_code=404, detail="리포트가 없습니다.")
-        return FileResponse(job.report, media_type="application/json", filename="notebooklm_auto_report.json")
+        return FileResponse(
+            job.report, media_type="application/json", filename="notebooklm_auto_report.json"
+        )
 
     @app.get("/api/jobs/{job_id}/report-summary")
     def report_summary(job_id: str) -> dict[str, Any]:
@@ -454,7 +461,9 @@ def create_app() -> FastAPI:
         if job.status not in TERMINAL_STATUSES:
             raise HTTPException(status_code=409, detail="진행 중인 작업은 다시 실행할 수 없습니다.")
         if not job.input_path or not Path(job.input_path).exists():
-            raise HTTPException(status_code=410, detail="원본 입력 파일을 찾을 수 없어 재실행이 불가능합니다.")
+            raise HTTPException(
+                status_code=410, detail="원본 입력 파일을 찾을 수 없어 재실행이 불가능합니다."
+            )
         new_job_id = uuid.uuid4().hex
         job_dir = WEB_ROOT / new_job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -473,7 +482,9 @@ def create_app() -> FastAPI:
         )
         with jobs_lock:
             jobs[new_job_id] = new_state
-            futures[new_job_id] = executor.submit(run_job, new_job_id, new_input, job_dir, dict(job.raw_options))
+            futures[new_job_id] = executor.submit(
+                run_job, new_job_id, new_input, job_dir, dict(job.raw_options)
+            )
         return JSONResponse(job_snapshot(new_state))
 
     @app.get("/api/jobs/{job_id}/previews")
@@ -484,7 +495,9 @@ def create_app() -> FastAPI:
         return {
             "job": {"id": job.id, "filename": job.filename},
             "kinds": list(PREVIEW_KINDS),
-            "slides": [{"slide_no": entry.slide_no, "kinds": list(entry.kinds)} for entry in entries],
+            "slides": [
+                {"slide_no": entry.slide_no, "kinds": list(entry.kinds)} for entry in entries
+            ],
         }
 
     @app.get("/api/jobs/{job_id}/previews/{slide_no}/{kind}")
@@ -548,7 +561,9 @@ def create_app() -> FastAPI:
         cache_dir = pptx_pages_cache_dir(job, which)
         path = cache_dir / f"page_{page_no:03d}.png"
         if not path.exists():
-            raise HTTPException(status_code=404, detail="해당 페이지가 없습니다. /pptx-pages를 먼저 호출하세요.")
+            raise HTTPException(
+                status_code=404, detail="해당 페이지가 없습니다. /pptx-pages를 먼저 호출하세요."
+            )
         return FileResponse(path, media_type="image/png", headers={"Cache-Control": "max-age=3600"})
 
     return app
@@ -595,7 +610,9 @@ def _resolve_source_for_pages(job: JobState, which: str) -> Path:
     elif which in ("vector", "hybrid"):
         candidate = resolve_artifact_path(job, which)
     else:
-        raise FileNotFoundError(f"지원하지 않는 미리보기 종류 '{which}' (result|original|vector|hybrid)")
+        raise FileNotFoundError(
+            f"지원하지 않는 미리보기 종류 '{which}' (result|original|vector|hybrid)"
+        )
     if candidate is None or not candidate.exists():
         raise FileNotFoundError(f"미리보기 원본 파일을 찾을 수 없습니다 ({which}).")
     return candidate
@@ -741,7 +758,9 @@ def sync_saved_jobs() -> None:
         source = source_files[0] if source_files else None
         if not result.exists() and not report.exists():
             continue
-        created_at = source.stat().st_mtime if source and source.exists() else job_dir.stat().st_mtime
+        created_at = (
+            source.stat().st_mtime if source and source.exists() else job_dir.stat().st_mtime
+        )
         state = JobState(
             id=job_dir.name,
             filename=source.name if source else job_dir.name,
@@ -749,7 +768,10 @@ def sync_saved_jobs() -> None:
             phase="완료" if result.exists() else "결과 파일 없음",
             progress=100,
             created_at=created_at,
-            updated_at=max(result.stat().st_mtime if result.exists() else created_at, report.stat().st_mtime if report.exists() else created_at),
+            updated_at=max(
+                result.stat().st_mtime if result.exists() else created_at,
+                report.stat().st_mtime if report.exists() else created_at,
+            ),
             workdir=str(job_dir / "work"),
             output=str(result),
             report=str(report) if report.exists() else None,
@@ -783,7 +805,11 @@ def resolve_artifact_path(job: JobState, name: str) -> Path | None:
 def build_layout_summary(job: JobState, layout_zip: Path) -> dict[str, Any]:
     slides: list[dict[str, Any]] = []
     with zipfile.ZipFile(layout_zip) as archive:
-        names = sorted(name for name in archive.namelist() if name.startswith("selected/") and name.endswith(".layout.json"))
+        names = sorted(
+            name
+            for name in archive.namelist()
+            if name.startswith("selected/") and name.endswith(".layout.json")
+        )
         for name in names:
             payload = json.loads(archive.read(name).decode("utf-8"))
             objects = payload.get("objects") if isinstance(payload.get("objects"), list) else []
@@ -809,7 +835,9 @@ def build_layout_summary(job: JobState, layout_zip: Path) -> dict[str, Any]:
                     "object_count": len(objects),
                     "type_counts": counts,
                     "raster_group_count": len(groups) if isinstance(groups, list) else 0,
-                    "punched_text_regions": raster_meta.get("punched_text_regions") if isinstance(raster_meta, dict) else None,
+                    "punched_text_regions": raster_meta.get("punched_text_regions")
+                    if isinstance(raster_meta, dict)
+                    else None,
                 }
             )
     return {
@@ -893,7 +921,9 @@ def job_snapshot(job: JobState) -> dict[str, Any]:
     data: dict[str, Any] = {key: getattr(job, key) for key in SERIALIZABLE_JOB_FIELDS}
     if job.status == "done":
         data["artifacts"] = {
-            "layout_json": bool((path := resolve_artifact_path(job, "layout-json")) and path.exists()),
+            "layout_json": bool(
+                (path := resolve_artifact_path(job, "layout-json")) and path.exists()
+            ),
             "vector": bool((path := resolve_artifact_path(job, "vector")) and path.exists()),
             "hybrid": bool((path := resolve_artifact_path(job, "hybrid")) and path.exists()),
         }
@@ -993,7 +1023,11 @@ def wrap_image_as_pptx(image_path: Path) -> Path:
     blank_layout = prs.slide_layouts[6]
     slide = prs.slides.add_slide(blank_layout)
     slide.shapes.add_picture(
-        str(image_path), 0, 0, width=prs.slide_width, height=prs.slide_height,
+        str(image_path),
+        0,
+        0,
+        width=prs.slide_width,
+        height=prs.slide_height,
     )
     prs.save(str(target))
     return target
@@ -1037,10 +1071,12 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
         update_job(job_id, status="running", phase="작업 시작", progress=1, error=None)
         output_path = job_dir / "result.pptx"
         workdir = job_dir / "work"
+        # payload 누락/빈 값 → config.py Settings (.env / STAR_SLIDE_*) fallback
+        settings = get_settings()
         options = NotebookLmAutoOptions(
-            base_url=str(payload.get("baseUrl") or "http://localhost:8300/v1"),
-            model=str(payload.get("model") or "gpt-5.5"),
-            api_key=str(payload.get("apiKey") or ""),
+            base_url=str(payload.get("baseUrl") or settings.vision_base_url),
+            model=str(payload.get("model") or settings.vision_model),
+            api_key=str(payload.get("apiKey") or settings.vision_api_key),
             timeout_sec=float(payload.get("timeout") or 600),
             retries=int(payload.get("retries") or 2),
             llm_parallel=int(payload.get("llmParallel") or 5),
@@ -1052,9 +1088,11 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
             layout_failure_mode=str(payload.get("layoutFailureMode") or "image_fallback"),
             watermark_mode=str(payload.get("watermarkMode") or "off"),
             reconstruction_mode=str(payload.get("reconstructionMode") or "auto"),
+            child_object_max_area_ratio=float(payload.get("childObjectMaxAreaRatio") or 0.25),
             text_erase_mode=str(payload.get("textEraseMode") or "codex_imagegen"),
             background_mode=str(payload.get("backgroundMode") or "white"),
             use_native_shapes=bool(payload.get("useNativeShapes", True)),
+            image_gen_model=str(payload.get("imageGenModel") or settings.image_gen_model),
         )
         previews_dir = job_dir / "artifacts" / "previews"
 
@@ -1092,7 +1130,14 @@ def run_job(job_id: str, input_path: Path, job_dir: Path, payload: dict[str, Any
     except Exception as exc:  # pragma: no cover - depends on external tools/model
         error_path = job_dir / "error.log"
         error_path.write_text(sanitize_error(traceback.format_exc()), encoding="utf-8")
-        update_job(job_id, force=True, status="failed", phase="실패", error=sanitize_error(str(exc)), progress=100)
+        update_job(
+            job_id,
+            force=True,
+            status="failed",
+            phase="실패",
+            error=sanitize_error(str(exc)),
+            progress=100,
+        )
 
 
 _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -1219,7 +1264,9 @@ def probe_llm_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
     if _looks_like_model_missing(first):
         first = dict(first)
         first["available_models"] = _list_models(base_url, api_key, timeout)
-        suffix = " · `ollama pull <model>`로 모델을 다운로드하거나 사용 가능한 모델 중에서 선택하세요."
+        suffix = (
+            " · `ollama pull <model>`로 모델을 다운로드하거나 사용 가능한 모델 중에서 선택하세요."
+        )
         first["error"] = f"{first.get('error', '')}{suffix}"
     return first
 
@@ -1231,7 +1278,7 @@ def _looks_like_model_missing(result: dict[str, Any]) -> bool:
 
 
 def _list_models(base_url: str, api_key: str, timeout: float) -> list[str]:
-    import httpx
+    import httpx2 as httpx
 
     ok, _ = _validate_outbound_url(base_url)
     if not ok:
@@ -1265,7 +1312,7 @@ def _probe_chat_completions(
     api_key: str,
     timeout: float,
 ) -> dict[str, Any]:
-    import httpx
+    import httpx2 as httpx
 
     url = f"{base_url}/chat/completions"
     headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -1325,7 +1372,11 @@ def _probe_chat_completions(
         }
         if response.status_code == 404:
             body_lower = response.text[:500].lower()
-            if "not found" in body_lower or "no such model" in body_lower or "does not exist" in body_lower:
+            if (
+                "not found" in body_lower
+                or "no such model" in body_lower
+                or "does not exist" in body_lower
+            ):
                 result["model_missing"] = True
         return result
 
@@ -1393,11 +1444,18 @@ def object_text(obj: dict[str, Any]) -> str:
     return ""
 
 
+def _report_rows(report: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    rows = report.get(key)
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
 def build_report_summary(job: JobState, report: dict[str, Any]) -> dict[str, Any]:
-    selected_qa = report.get("selected_qa") if isinstance(report.get("selected_qa"), list) else []
-    vector_qa = report.get("vector_qa") if isinstance(report.get("vector_qa"), list) else []
-    hybrid_qa = report.get("hybrid_qa") if isinstance(report.get("hybrid_qa"), list) else []
-    decisions = report.get("selection_report") if isinstance(report.get("selection_report"), list) else []
+    selected_qa = _report_rows(report, "selected_qa")
+    vector_qa = _report_rows(report, "vector_qa")
+    hybrid_qa = _report_rows(report, "hybrid_qa")
+    decisions = _report_rows(report, "selection_report")
 
     chosen_counts = {"vector": 0, "hybrid": 0}
     for item in decisions:
@@ -1406,11 +1464,7 @@ def build_report_summary(job: JobState, report: dict[str, Any]) -> dict[str, Any
             chosen_counts[chosen] += 1
 
     worst = sorted(
-        (
-            item
-            for item in selected_qa
-            if isinstance(item.get("mean_abs_diff"), int | float)
-        ),
+        (item for item in selected_qa if isinstance(item.get("mean_abs_diff"), int | float)),
         key=lambda item: float(item["mean_abs_diff"]),
         reverse=True,
     )[:5]
@@ -2439,6 +2493,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <select id="s_reconstructionMode" onchange="toggleImageSplitOptions('s_')">
             <option value="auto" data-i18n="options.reconstructionAuto">기본 (vector + hybrid 자동 선택)</option>
+            <option value="hierarchical_overlay" data-i18n="options.reconstructionHierarchicalOverlay">hierarchical_overlay — parent 배경 + child 객체 분리</option>
             <option value="image_split" data-i18n="options.reconstructionImageSplit">image_split — Codex + SAM2 누끼</option>
           </select>
         </div>
@@ -2616,6 +2671,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <select id="reconstructionMode" onchange="toggleImageSplitOptions('')">
           <option value="auto" data-i18n="options.reconstructionAuto">기본 (vector + hybrid 자동 선택)</option>
+          <option value="hierarchical_overlay" data-i18n="options.reconstructionHierarchicalOverlay">hierarchical_overlay — parent 배경 + child 객체 분리</option>
           <option value="image_split" data-i18n="options.reconstructionImageSplit">image_split — Codex + SAM2 누끼</option>
         </select>
       </div>
@@ -2685,7 +2741,7 @@ INDEX_HTML = r"""<!doctype html>
       return _pptxPreviewModulePromise;
     }
 
-    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode","reconstructionMode","textEraseMode","backgroundMode","useNativeShapes"];
+    const optionFields = ["timeout","retries","llmParallel","fontScale","hybridAllowedDelta","layoutFailureMode","sam3","editableEmbeddedText","keepIntermediates","watermarkMode","reconstructionMode","childObjectMaxAreaRatio","textEraseMode","backgroundMode","useNativeShapes"];
     const settingsKey = "starSlideSettings";
     const themeKey = "starSlideTheme";
     const languageKey = "starSlideLanguage";
@@ -2739,6 +2795,7 @@ INDEX_HTML = r"""<!doctype html>
         "options.watermarkDetail": "디테일 — LaMa 인페인팅",
         "options.reconstructionMode": "재구성 모드 (단일 이미지)",
         "options.reconstructionAuto": "기본 (vector + hybrid 자동 선택)",
+        "options.reconstructionHierarchicalOverlay": "hierarchical_overlay — parent 배경 + child 객체 분리",
         "options.reconstructionImageSplit": "image_split — Codex + SAM2 누끼 (단일 이미지)",
         "options.textEraseMode": "텍스트 제거 방식 (image_split)",
         "options.eraseCodex": "Codex image_gen (느림 60s, 고품질)",
@@ -2749,7 +2806,7 @@ INDEX_HTML = r"""<!doctype html>
         "options.bgClean": "clean — 텍스트 제거 이미지 통째 (시각 충실)",
         "options.useNativeShapes": "PPT native shape 사용 (큰 박스/카드/화살표 직접 편집 가능)",
         "options.imageSplitGroup": "↳ image_split 세부 옵션 (재구성 모드가 image_split 일 때만 적용)",
-        "help.reconstructionMode": "단일 이미지/deck 모두 적용. image_split: Codex Vision 으로 텍스트+위치 추출 → Codex image_gen 으로 텍스트 지운 배경 → SAM2 로 객체 누끼 → editable PPTX 재조합. 슬라이드당 60-120초.",
+        "help.reconstructionMode": "단일 이미지/deck 모두 적용. hierarchical_overlay: raster parent 배경에서 작은 child 객체를 분리/punchout. image_split: Codex Vision + image_gen + SAM2 객체 누끼. 슬라이드당 60-120초.",
         "help.textEraseMode": "image_split 전용. codex_imagegen: 그라데이션/복잡한 배경에 우수 (~60s). solid: 단색/카드 배경에 빠르게 적합 (~1s).",
         "help.backgroundMode": "image_split 전용. white: 흰 캔버스 위에 alpha 객체+textbox (default, 객체 분리 명확). transparent: PowerPoint 기본 슬라이드 배경. clean: Codex 텍스트 제거 이미지를 통째 깔기 (시각 100% 충실하지만 객체 이동 시 같은 모양 잔존).",
         "help.retries": "layout JSON 생성이 실패했을 때 같은 슬라이드를 다시 호출하는 횟수입니다. 기본 2회이며, 네트워크/LLM 일시 실패를 흡수합니다.",
@@ -2915,6 +2972,7 @@ INDEX_HTML = r"""<!doctype html>
         "options.watermarkDetail": "Detail — LaMa inpaint",
         "options.reconstructionMode": "Reconstruction mode (single image)",
         "options.reconstructionAuto": "Default (vector + hybrid auto-pick)",
+        "options.reconstructionHierarchicalOverlay": "hierarchical_overlay — parent background + child objects",
         "options.reconstructionImageSplit": "image_split — Codex + SAM2 cutout (single image)",
         "options.textEraseMode": "Text-erase mode (image_split)",
         "options.eraseCodex": "Codex image_gen (slow ~60s, high quality)",
@@ -2925,7 +2983,7 @@ INDEX_HTML = r"""<!doctype html>
         "options.bgClean": "clean — text-erased image full backdrop (faithful)",
         "options.useNativeShapes": "Use PPT native shapes (containers/cards/arrows are directly editable)",
         "options.imageSplitGroup": "↳ image_split sub-options (only applied when reconstruction mode is image_split)",
-        "help.reconstructionMode": "Single image or deck input. image_split: Codex Vision extracts text+positions, Codex image_gen erases text into a clean background, SAM2 masks each object → editable PPTX. Takes ~60-120s per slide.",
+        "help.reconstructionMode": "Single image or deck input. hierarchical_overlay peels small child objects out of raster parent backgrounds. image_split uses Codex Vision + image_gen + SAM2 masks. Takes ~60-120s per slide.",
         "help.textEraseMode": "image_split only. codex_imagegen: best for gradients/complex backgrounds (~60s). solid: faster for flat/card backgrounds (~1s).",
         "help.backgroundMode": "image_split only. white: white canvas + alpha objects + textbox (default, object separation is clearest). transparent: PowerPoint default slide background. clean: Codex's text-erased image as full backdrop (100%% visually faithful but moving an object leaves the same shape underneath).",
         "help.retries": "How many times to retry the same slide when layout JSON generation fails. Default is 2 to absorb transient network or LLM failures.",
@@ -3601,6 +3659,7 @@ INDEX_HTML = r"""<!doctype html>
         keepIntermediates: $("keepIntermediates").checked,
         watermarkMode: $("watermarkMode").value || "off",
         reconstructionMode: $("reconstructionMode").value || "auto",
+        childObjectMaxAreaRatio: 0.25,
         textEraseMode: $("textEraseMode").value || "codex_imagegen",
         backgroundMode: $("backgroundMode").value || "white",
         useNativeShapes: $("useNativeShapes").checked,
@@ -3839,6 +3898,7 @@ INDEX_HTML = r"""<!doctype html>
         keepIntermediates: checked("s_keepIntermediates"),
         watermarkMode: v("s_watermarkMode", "off") || "off",
         reconstructionMode: v("s_reconstructionMode", "auto") || "auto",
+        childObjectMaxAreaRatio: 0.25,
         textEraseMode: v("s_textEraseMode", "codex_imagegen") || "codex_imagegen",
         backgroundMode: v("s_backgroundMode", "white") || "white",
         useNativeShapes: checked("s_useNativeShapes"),

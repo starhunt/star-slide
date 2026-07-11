@@ -26,13 +26,22 @@ def run(
     base_url: str = typer.Option(
         "http://localhost:8300/v1",
         "--base-url",
-        envvar="STAR_SLIDE_BASE_URL",
+        envvar=["STAR_SLIDE_BASE_URL", "STAR_SLIDE_VISION_BASE_URL"],
     ),
-    model: str = typer.Option("gpt-5.5", "--model", envvar="STAR_SLIDE_MODEL"),
+    model: str = typer.Option(
+        "gpt-5.5",
+        "--model",
+        envvar=["STAR_SLIDE_MODEL", "STAR_SLIDE_VISION_MODEL"],
+    ),
     api_key: str = typer.Option(
         "",
         "--api-key",
-        envvar=["STAR_SLIDE_API_KEY", "VISION_PROXY_API_KEY"],
+        envvar=[
+            "STAR_SLIDE_API_KEY",
+            "VISION_PROXY_API_KEY",
+            "STAR_SLIDE_VISION_API_KEY",
+            "LOCAL_CLAUDE_API_KEY",
+        ],
     ),
     timeout: float = typer.Option(600.0, "--timeout", envvar="STAR_SLIDE_TIMEOUT"),
     retries: int = typer.Option(2, "--retries", envvar="STAR_SLIDE_RETRIES"),
@@ -72,6 +81,19 @@ def run(
         envvar="STAR_SLIDE_LAYOUT_FAILURE_MODE",
         help="'image_fallback'이면 실패 슬라이드를 원본 이미지로 넣고 계속, 'fail'이면 중단",
     ),
+    reconstruction_mode: str = typer.Option(
+        "auto",
+        "--reconstruction-mode",
+        envvar="STAR_SLIDE_RECONSTRUCTION_MODE",
+        help="auto|hierarchical_overlay|image_split",
+    ),
+    child_object_max_area_ratio: float = typer.Option(
+        0.25,
+        "--child-object-max-area-ratio",
+        min=0.01,
+        max=1.0,
+        help="hierarchical_overlay에서 parent raster layer 밖으로 peel할 child 객체 최대 면적비",
+    ),
     quiet: bool = typer.Option(
         False,
         "--quiet",
@@ -87,8 +109,9 @@ def run(
     """PPTX/PDF 업로드/배치 자동화와 같은 경로로 NotebookLM deck을 변환한다.
 
     환경변수 (CLI 옵션이 있으면 우선):
-      STAR_SLIDE_API_KEY (alias: VISION_PROXY_API_KEY), STAR_SLIDE_BASE_URL,
-      STAR_SLIDE_MODEL, STAR_SLIDE_TIMEOUT, STAR_SLIDE_RETRIES,
+      STAR_SLIDE_API_KEY (aliases: VISION_PROXY_API_KEY, STAR_SLIDE_VISION_API_KEY),
+      STAR_SLIDE_BASE_URL (alias: STAR_SLIDE_VISION_BASE_URL),
+      STAR_SLIDE_MODEL (alias: STAR_SLIDE_VISION_MODEL), STAR_SLIDE_TIMEOUT, STAR_SLIDE_RETRIES,
       STAR_SLIDE_LLM_PARALLEL, STAR_SLIDE_SAM3.
 
     Exit code: 성공 0, 실패 1. --json 모드에서도 동일.
@@ -107,6 +130,9 @@ def run(
         font_scale=font_scale,
         keep_intermediates=keep_intermediates,
         layout_failure_mode=layout_failure_mode,
+        reconstruction_mode=reconstruction_mode,
+        child_object_max_area_ratio=child_object_max_area_ratio,
+        quiet_subprocesses=quiet or json_output,
     )
 
     show_progress = not (quiet or json_output)
@@ -124,7 +150,9 @@ def run(
         else nullcontext()
     )
     with progress_ctx as progress:
-        task_id = progress.add_task("NotebookLM 자동 변환 중...", total=None) if show_progress else None
+        task_id = (
+            progress.add_task("NotebookLM 자동 변환 중...", total=None) if show_progress else None
+        )
         try:
             result = convert_notebooklm_auto(
                 input_path=input_path,

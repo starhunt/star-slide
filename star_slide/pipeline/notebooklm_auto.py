@@ -19,18 +19,23 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import TypeAdapter
+
+from star_slide.config import get_settings
 from star_slide.input.pptx_extractor import extract_embedded_images, extract_pdf_pages
 
 
 @dataclass(frozen=True)
 class NotebookLmAutoOptions:
-    base_url: str = "http://localhost:8300/v1"
-    model: str = "gpt-5.5"
-    api_key: str = ""
+    # 설정 (config.py Settings — .env / STAR_SLIDE_* 환경변수) 의 vision_* 값을
+    # default 로 사용. 호출자가 명시하면 override.
+    base_url: str = field(default_factory=lambda: get_settings().vision_base_url)
+    model: str = field(default_factory=lambda: get_settings().vision_model)
+    api_key: str = field(default_factory=lambda: get_settings().vision_api_key)
     timeout_sec: float = 600.0
     retries: int = 2
     use_sam3: bool = False
@@ -52,9 +57,14 @@ class NotebookLmAutoOptions:
     #   "image_split" — Codex Vision + image_gen + SAM2 누끼 (단일 이미지 + deck 모두)
     reconstruction_mode: str = "auto"
     # image_split 모드에서 텍스트 제거 방식:
-    #   "codex_imagegen" — Codex CLI image_gen 2.0 호출 (~30-60s, 그라데이션 보존 우수)
+    #   "codex_imagegen" — codex CLI subprocess (builtin image_gen 2.0, 그라데이션 보존)
     #   "solid"          — 주변색 ring sample fill (~1s, 단색 배경 적합)
     text_erase_mode: str = "codex_imagegen"
+    # image_split 텍스트 제거 (codex_imagegen 모드) 에 사용할 모델.
+    # 빈 문자열이면 codex CLI 기본 모델 사용 (권장). cliproxy 는 input-image edit
+    # endpoint 가 없어 image_gen 단계만 codex CLI subprocess 로 직접 호출한다.
+    # default 는 STAR_SLIDE_IMAGE_GEN_MODEL 환경변수에서.
+    image_gen_model: str = field(default_factory=lambda: get_settings().image_gen_model)
     # image_split 모드의 슬라이드 배경:
     #   "white"       — 흰 캔버스 + alpha 객체 + textbox (default, 깔끔)
     #   "transparent" — 배경 picture 없음 (PowerPoint 기본 슬라이드 배경)
@@ -65,8 +75,12 @@ class NotebookLmAutoOptions:
     #           픽토그램 bbox alpha crop. 진짜 편집 가능한 layered 객체. (default)
     #   False — SAM2 auto-mask 로 alpha PNG 만 (이전 동작)
     use_native_shapes: bool = True
-    # image_split 의 입력 이미지에서 우측 하단 NotebookLM 워터마크 자동 제거 (default ON).
+    # image_split 모드의 입력 이미지에서 우측 하단 NotebookLM 워터마크 자동 제거 (default ON).
     remove_notebooklm_watermark: bool = True
+    # hierarchical_overlay 모드에서 raster parent 안의 작은 editable child shape/image를
+    # 보존하고 parent crop에서는 해당 영역을 punchout 처리한다.
+    child_object_max_area_ratio: float = 0.25
+    quiet_subprocesses: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,8 +126,14 @@ def redact_cmd(cmd: list[str]) -> list[str]:
     return redacted
 
 
-def run_cmd(cmd: list[str], *, cwd: Path | None = None) -> None:
-    completed = subprocess.run(cmd, cwd=str(cwd or repo_root()), check=False)
+def run_cmd(cmd: list[str], *, cwd: Path | None = None, quiet: bool = False) -> None:
+    completed = subprocess.run(
+        cmd,
+        cwd=str(cwd or repo_root()),
+        check=False,
+        capture_output=quiet,
+        text=quiet,
+    )
     if completed.returncode != 0:
         printable = " ".join(redact_cmd(cmd))
         raise RuntimeError(f"command failed with exit code {completed.returncode}: {printable}")
@@ -126,7 +146,7 @@ def copy_layouts(src_dir: Path, dst_dir: Path) -> None:
 
 
 def read_qa(path: Path) -> list[dict[str, Any]]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return TypeAdapter(list[dict[str, Any]]).validate_json(path.read_bytes())
 
 
 def dir_size_bytes(path: Path) -> int:
@@ -158,6 +178,7 @@ def build_layout_qa(
     render_dir: Path,
     allow_images: bool,
     font_scale: float,
+    quiet: bool = False,
 ) -> None:
     layout_args = []
     for path in sorted(layout_dir.glob("*.layout.json")):
@@ -177,7 +198,7 @@ def build_layout_qa(
     ]
     if allow_images:
         cmd.append("--allow-images")
-    run_cmd(cmd)
+    run_cmd(cmd, quiet=quiet)
 
 
 def generate_layouts(
@@ -215,7 +236,7 @@ def generate_layouts(
         cmd.extend(["--continue-on-error", "--fallback-on-error"])
     if options.api_key:
         cmd.extend(["--api-key", options.api_key])
-    run_cmd(cmd)
+    run_cmd(cmd, quiet=options.quiet_subprocesses)
 
 
 def detect_groups(
@@ -245,10 +266,12 @@ def detect_groups(
     ]
     if options.api_key:
         cmd.extend(["--api-key", options.api_key])
-    run_cmd(cmd)
+    run_cmd(cmd, quiet=options.quiet_subprocesses)
 
 
-def refine_groups_sam3(*, images: list[Path], groups_dir: Path, out_dir: Path) -> None:
+def refine_groups_sam3(
+    *, images: list[Path], groups_dir: Path, out_dir: Path, quiet: bool = False
+) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for image in images:
         groups_json = groups_dir / f"{image.stem}_raster_groups.json"
@@ -266,7 +289,8 @@ def refine_groups_sam3(*, images: list[Path], groups_dir: Path, out_dir: Path) -
                 str(out_dir),
                 "--device",
                 "auto",
-            ]
+            ],
+            quiet=quiet,
         )
 
 
@@ -279,6 +303,9 @@ def build_hybrid_layouts(
     out_dir: Path,
     slide_count: int,
     editable_embedded_text: bool,
+    hierarchical_overlay: bool = False,
+    child_object_max_area_ratio: float = 0.25,
+    quiet: bool = False,
 ) -> None:
     cmd = [
         sys.executable,
@@ -301,9 +328,17 @@ def build_hybrid_layouts(
     ]
     if not editable_embedded_text:
         cmd.append("--rasterize-embedded-labels")
+    if hierarchical_overlay:
+        cmd.extend(
+            [
+                "--peel-child-objects",
+                "--child-object-max-area-ratio",
+                f"{child_object_max_area_ratio:g}",
+            ]
+        )
     if sam_dir is not None:
         cmd.extend(["--sam-dir", str(sam_dir)])
-    run_cmd(cmd)
+    run_cmd(cmd, quiet=quiet)
 
 
 def select_layouts(
@@ -424,7 +459,10 @@ def collect_artifacts(
     copy_tree_files(hybrid_layout_dir, layout_dir / "hybrid", "*.layout.json")
     copy_tree_files(selected_layout_dir, layout_dir / "selected", "*.layout.json")
     if (selected_layout_dir / "selection_report.json").exists():
-        shutil.copy2(selected_layout_dir / "selection_report.json", layout_dir / "selected" / "selection_report.json")
+        shutil.copy2(
+            selected_layout_dir / "selection_report.json",
+            layout_dir / "selected" / "selection_report.json",
+        )
     layout_zip = make_zip(layout_dir, artifact_dir / "layout_json")
 
     summary = {
@@ -445,7 +483,9 @@ def collect_artifacts(
         },
         "keep_intermediates": keep_intermediates,
     }
-    (artifact_dir / "artifact_manifest.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    (artifact_dir / "artifact_manifest.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     remove_generated_sidecars(output_path)
     remove_generated_sidecars(vector_pptx)
@@ -459,10 +499,14 @@ def collect_artifacts(
     return {
         "artifact_dir": artifact_dir,
         "report": report_artifact if report_artifact.exists() else report_path,
-        "montage": montage_artifact if montage_artifact.exists() else selected_qa_dir / "montage.png",
+        "montage": montage_artifact
+        if montage_artifact.exists()
+        else selected_qa_dir / "montage.png",
         "vector_pptx": vector_artifact if vector_artifact.exists() else vector_pptx,
         "hybrid_pptx": hybrid_artifact if hybrid_artifact.exists() else hybrid_pptx,
-        "selected_layout_dir": layout_dir / "selected" if (layout_dir / "selected").exists() else selected_layout_dir,
+        "selected_layout_dir": layout_dir / "selected"
+        if (layout_dir / "selected").exists()
+        else selected_layout_dir,
     }
 
 
@@ -479,7 +523,11 @@ def _build_image_only_pptx(images: list[Path], output_path: Path) -> None:
     for img_path in images:
         slide = prs.slides.add_slide(blank_layout)
         slide.shapes.add_picture(
-            str(img_path), 0, 0, width=prs.slide_width, height=prs.slide_height,
+            str(img_path),
+            0,
+            0,
+            width=prs.slide_width,
+            height=prs.slide_height,
         )
     prs.save(str(output_path))
 
@@ -576,6 +624,7 @@ def _convert_image_split(
     options: NotebookLmAutoOptions,
     emit: Callable[[str, float], None],
     check_cancel: Callable[[], None],
+    cancel: Callable[[], bool] | None,
     pre_cleanup_hook: Callable[[Path], None] | None,
     keep_intermediates: bool,
 ) -> NotebookLmAutoResult:
@@ -599,6 +648,11 @@ def _convert_image_split(
         use_native_shapes=options.use_native_shapes,
         remove_notebooklm_watermark=options.remove_notebooklm_watermark,
         slide_parallel=max(1, int(options.llm_parallel)),
+        vision_base_url=options.base_url,
+        vision_model=options.model,
+        image_gen_model=options.image_gen_model,
+        vision_api_key=options.api_key,
+        vision_timeout_sec=options.timeout_sec,
     )
     split_workdir = workdir / "image_split"
     result = convert_image_split_multi(
@@ -607,7 +661,7 @@ def _convert_image_split(
         workdir=split_workdir,
         options=split_options,
         progress=emit,
-        cancel=lambda: False,
+        cancel=cancel,
     )
 
     # 미리보기/썸네일 호환: clean bg 를 qa_selected/slide-1.png 로 복사
@@ -624,19 +678,26 @@ def _convert_image_split(
     artifact_dir = workdir.parent / "artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     report_path = artifact_dir / "report.json"
-    report_path.write_text(json.dumps({
-        "input": str(input_path),
-        "output": str(output_path),
-        "mode": "image_split",
-        "text_erase_mode": options.text_erase_mode,
-        "elapsed_sec": result.elapsed_sec,
-        "text_layout_json": str(result.text_layout_json),
-        "object_layers_json": str(result.object_layers_json),
-        "clean_bg_png": str(result.clean_bg_png),
-        "selected_qa": [],
-        "vector_qa": [],
-        "hybrid_qa": [],
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(
+        json.dumps(
+            {
+                "input": str(input_path),
+                "output": str(output_path),
+                "mode": "image_split",
+                "text_erase_mode": options.text_erase_mode,
+                "elapsed_sec": result.elapsed_sec,
+                "text_layout_json": str(result.text_layout_json),
+                "object_layers_json": str(result.object_layers_json),
+                "clean_bg_png": str(result.clean_bg_png),
+                "selected_qa": [],
+                "vector_qa": [],
+                "hybrid_qa": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     montage_artifact = artifact_dir / "montage.png"
     if result.clean_bg_png.exists() and not montage_artifact.exists():
@@ -672,6 +733,13 @@ def convert_notebooklm_auto(
     cancel: Callable[[], bool] | None = None,
     pre_cleanup_hook: Callable[[Path], None] | None = None,
 ) -> NotebookLmAutoResult:
+    reconstruction_modes = {"auto", "hierarchical_overlay", "image_split"}
+    if options.reconstruction_mode not in reconstruction_modes:
+        raise ValueError(
+            "reconstruction_mode must be one of "
+            f"{sorted(reconstruction_modes)}: {options.reconstruction_mode!r}"
+        )
+
     def emit(message: str, percent: float) -> None:
         if progress is not None:
             progress(message, percent)
@@ -721,6 +789,7 @@ def convert_notebooklm_auto(
             options=options,
             emit=emit,
             check_cancel=check_cancel,
+            cancel=cancel,
             pre_cleanup_hook=pre_cleanup_hook,
             keep_intermediates=options.keep_intermediates,
         )
@@ -746,6 +815,7 @@ def convert_notebooklm_auto(
         render_dir=vector_qa_dir,
         allow_images=options.layout_failure_mode == "image_fallback",
         font_scale=options.font_scale,
+        quiet=options.quiet_subprocesses,
     )
 
     check_cancel()
@@ -762,7 +832,12 @@ def convert_notebooklm_auto(
     emit("SAM3 이미지 그룹 보정 중", 60)
     sam_dir = workdir / "raster_groups_sam3" if options.use_sam3 else None
     if sam_dir is not None:
-        refine_groups_sam3(images=images, groups_dir=groups_dir, out_dir=sam_dir)
+        refine_groups_sam3(
+            images=images,
+            groups_dir=groups_dir,
+            out_dir=sam_dir,
+            quiet=options.quiet_subprocesses,
+        )
 
     check_cancel()
     emit("hybrid layout 생성 중", 70)
@@ -775,6 +850,9 @@ def convert_notebooklm_auto(
         out_dir=hybrid_layout_dir,
         slide_count=len(images),
         editable_embedded_text=options.editable_embedded_text,
+        hierarchical_overlay=options.reconstruction_mode == "hierarchical_overlay",
+        child_object_max_area_ratio=options.child_object_max_area_ratio,
+        quiet=options.quiet_subprocesses,
     )
 
     check_cancel()
@@ -788,6 +866,7 @@ def convert_notebooklm_auto(
         render_dir=hybrid_qa_dir,
         allow_images=True,
         font_scale=options.font_scale,
+        quiet=options.quiet_subprocesses,
     )
 
     check_cancel()
@@ -813,6 +892,7 @@ def convert_notebooklm_auto(
         render_dir=selected_qa_dir,
         allow_images=True,
         font_scale=options.font_scale,
+        quiet=options.quiet_subprocesses,
     )
 
     combined_report = {
@@ -825,7 +905,9 @@ def convert_notebooklm_auto(
         "hybrid_qa": read_qa(hybrid_qa_dir / "qa_report.json"),
     }
     report_path = workdir / "notebooklm_auto_report.json"
-    report_path.write_text(json.dumps(combined_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(
+        json.dumps(combined_report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     artifacts = collect_artifacts(
         input_path=input_path,
         output_path=output_path,

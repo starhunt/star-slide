@@ -18,13 +18,24 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 from numpy.typing import NDArray
 from PIL import Image
 
 from star_slide.segmentation.iou import Bbox, mask_to_bbox
 
 DEFAULT_MODEL_ID = "facebook/sam3"
+
+
+def _require_torch() -> Any:
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "SAM3에는 GPU segmentation 의존성이 필요합니다. "
+            "`uv sync --extra gpu-segmentation`을 실행하세요."
+        ) from exc
+    return torch
+
 
 # 슬라이드 도메인 기본 prompt 풀 (PRD §10.1 Segmentation 클래스에 부합)
 DEFAULT_SLIDE_PROMPTS: tuple[str, ...] = (
@@ -66,6 +77,7 @@ class Sam3Result:
 
 def _select_device(prefer: str = "auto") -> str:
     """auto | cuda | mps | cpu."""
+    torch = _require_torch()
     if prefer == "auto":
         if torch.cuda.is_available():
             return "cuda"
@@ -84,9 +96,15 @@ def _load_sam3(model_id: str = DEFAULT_MODEL_ID, device: str = "cpu") -> tuple[A
     if key in _LOADED_SAM3:
         return _LOADED_SAM3[key]
 
-    from transformers import Sam3Model, Sam3Processor
+    try:
+        from transformers import Sam3Model, Sam3Processor
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "SAM3에는 GPU segmentation 의존성이 필요합니다. "
+            "`uv sync --extra gpu-segmentation`을 실행하세요."
+        ) from exc
 
-    model = Sam3Model.from_pretrained(model_id).to(device)  # type: ignore[arg-type]
+    model = Sam3Model.from_pretrained(model_id).to(device)
     model.eval()
     processor = Sam3Processor.from_pretrained(model_id)
     _LOADED_SAM3[key] = (model, processor)
@@ -126,6 +144,7 @@ def run_sam3(
 
     pil = _to_pil(image)
     w, h = pil.size
+    torch = _require_torch()
 
     dev = _select_device(device)
     model, processor = _load_sam3(model_id=model_id, device=dev)
@@ -207,6 +226,7 @@ def run_sam3_box_prompts(
 
     pil = _to_pil(image)
     w, h = pil.size
+    torch = _require_torch()
     dev = _select_device(device)
     model, processor = _load_sam3(model_id=model_id, device=dev)
 
@@ -228,9 +248,7 @@ def run_sam3_box_prompts(
             with torch.no_grad():
                 outputs = model(**inputs)
             target_sizes_t = inputs.get("original_sizes")
-            target_sizes = (
-                target_sizes_t.tolist() if target_sizes_t is not None else [[h, w]]
-            )
+            target_sizes = target_sizes_t.tolist() if target_sizes_t is not None else [[h, w]]
             post = processor.post_process_instance_segmentation(
                 outputs,
                 threshold=threshold,
@@ -298,6 +316,7 @@ def run_sam3_text_prompt(
 
     pil = _to_pil(image)
     w, h = pil.size
+    torch = _require_torch()
     dev = _select_device(device)
     model, processor = _load_sam3(model_id=model_id, device=dev)
 
