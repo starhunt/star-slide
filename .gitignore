@@ -52,7 +52,6 @@ Thumbs.db
 # Runtime data (large) — manifest/라벨 JSON과 가이드는 추적, 이미지/원본만 제외
 data/
 .session/
-.github/workflows/ci.yml
 storage/
 models/
 
@@ -66,6 +65,22 @@ output/*
 
 # Experiments
 experiments/
+
+# Local reconstruction experiments and generated previews
+/artifacts/
+/assets/generated/
+/generated/
+/outputs/
+/korean-infographic-text-removed.png
+/text_removed_infographic*.png
+
+# One-off reconstruction probes tied to local sample paths
+/scripts/assemble_vision_pptx.py
+/scripts/build_prompt_infographic_sample.py
+/scripts/extract_raster_islands.py
+/scripts/poc_*.py
+/scripts/reconstruct_public_ax.py
+/scripts/vision_gpt55_remaining.py
 
 # Build artifacts
 *.whl
